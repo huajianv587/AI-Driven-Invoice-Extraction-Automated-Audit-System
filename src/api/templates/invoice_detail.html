@@ -1,0 +1,97 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Invoice {{ inv.id }}</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; }
+    .box { border: 1px solid #ddd; padding: 12px; border-radius: 10px; margin-bottom: 16px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background: #f5f5f5; text-align: left; }
+    textarea { width: 100%; height: 120px; }
+  </style>
+</head>
+<body>
+  <p><a href="/">← Back</a> | <a href="/approvals">Approvals Queue</a></p>
+  <h2>Invoice #{{ inv.id }} ({{ inv.status }})</h2>
+
+  <div class="box">
+    <b>Basic</b><br/>
+    Unique: {{ inv.unique_hash }}<br/>
+    Invoice No: {{ inv.invoice_number or "" }}<br/>
+    Date: {{ inv.invoice_date or "" }}<br/>
+    PO: {{ inv.purchase_order_no or "" }}<br/>
+    Seller: {{ inv.seller_name or "" }}<br/>
+    Buyer: {{ inv.buyer_name or "" }}<br/>
+    Total: {{ inv.total_amount_with_tax or "" }} {{ inv.currency or "" }}<br/>
+    Expected(PO): {{ inv.expected_amount or "" }}<br/>
+    Diff: {{ inv.amount_diff or "" }}<br/>
+    Risk: {{ inv.risk_summary or "" }}<br/>
+  </div>
+
+  <div class="box">
+    <b>Risk Hits</b>
+    <table>
+      <tr><th>Rule</th><th>Severity</th><th>Reason</th><th>Evidence</th></tr>
+      {% for h in hits %}
+      <tr><td>{{ h.rule_id }}</td><td>{{ h.severity }}</td><td>{{ h.reason }}</td><td>{{ h.evidence or "" }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  <div class="box">
+    <b>Items</b>
+    <table>
+      <tr><th>#</th><th>Name</th><th>Spec</th><th>Qty</th><th>Unit</th><th>Unit Price</th><th>Amount</th><th>Tax Rate</th><th>Remark</th></tr>
+      {% for it in items %}
+      <tr>
+        <td>{{ it.line_no }}</td>
+        <td>{{ it.item_name or "" }}</td>
+        <td>{{ it.spec or "" }}</td>
+        <td>{{ it.qty or "" }}</td>
+        <td>{{ it.unit or "" }}</td>
+        <td>{{ it.unit_price or "" }}</td>
+        <td>{{ it.amount or "" }}</td>
+        <td>{{ it.tax_rate or "" }}</td>
+        <td>{{ it.remark or "" }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  <div class="box">
+    <b>Submit Explanation (with attachments)</b>
+    <form method="post" action="/invoices/{{ inv.id }}/explain" enctype="multipart/form-data">
+      <p>Submitter: <input type="text" name="submitter" placeholder="name/email"/></p>
+      <p><textarea name="explanation" placeholder="Explain the issue, reason, and mitigation..."></textarea></p>
+      <p>Attachments: <input type="file" name="files" multiple /></p>
+      <button type="submit">Submit</button>
+    </form>
+  </div>
+
+  <div class="box">
+    <b>Explanation History</b>
+    {% for e in expls %}
+      <p>#{{ e.id }} at {{ e.created_at }} by {{ e.submitter or "-" }}<br/>{{ e.explanation }}</p>
+    {% endfor %}
+    <b>Attachments</b>
+    <ul>
+      {% for a in attaches %}
+        <li>{{ a.filename }} ({{ a.size_bytes }} bytes) — {{ a.file_path }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="box">
+    <b>Approval Tasks</b>
+    <table>
+      <tr><th>ID</th><th>Status</th><th>Approver</th><th>Note</th><th>Decided At</th></tr>
+      {% for t in approvals %}
+        <tr><td>{{ t.id }}</td><td>{{ t.status }}</td><td>{{ t.approver or "" }}</td><td>{{ t.decision_note or "" }}</td><td>{{ t.decided_at or "" }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+
+</body>
+</html>
