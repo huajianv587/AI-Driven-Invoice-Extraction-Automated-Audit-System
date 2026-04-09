@@ -1,14 +1,17 @@
-from fastapi import FastAPI, UploadFile, File
-from rapidocr_onnxruntime import RapidOCR
-import uvicorn
-import tempfile
 import os
+import tempfile
+
+import uvicorn
+from fastapi import FastAPI, File, UploadFile
+from rapidocr_onnxruntime import RapidOCR
+
 
 app = FastAPI()
 
-print("正在加载 RapidOCR (ONNX) 模型...")
+print("Loading RapidOCR (ONNX) model...")
 engine = RapidOCR()
-print("✅ 模型加载完毕！")
+print("RapidOCR model loaded.")
+
 
 @app.post("/ocr")
 async def ocr_endpoint(file: UploadFile = File(...)):
@@ -21,32 +24,18 @@ async def ocr_endpoint(file: UploadFile = File(...)):
             tmp.write(content)
 
         result, elapse = engine(tmp_path)
-
-        lines = []
+        full_text = ""
         if result:
-            for line in result:
-                # line: [box, text, score]
-                if len(line) >= 3:
-                    lines.append({"text": line[1], "score": float(line[2])})
-                elif len(line) >= 2:
-                    lines.append({"text": line[1], "score": None})
+            txts = [line[1] for line in result if len(line) > 1]
+            full_text = "\n".join(txts)
 
-        full_text = "\n".join([x["text"] for x in lines]) if lines else ""
-
-        return {
-            "status": "success",
-            "text": full_text,              # ✅ 给项目用
-            "lines": lines,                 # ✅ 给项目用
-            "extracted_text": full_text,    # 兼容你原来的字段
-            "elapse": elapse,
-        }
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
+        return {"status": "success", "extracted_text": full_text, "elapse": elapse}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
 
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

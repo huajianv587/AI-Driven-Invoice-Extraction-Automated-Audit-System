@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS purchase_orders (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  purchase_no VARCHAR(64) NOT NULL,
+  po_number VARCHAR(64) NULL,
+  supplier VARCHAR(255) NULL,
+  supplier_name VARCHAR(255) NULL,
+  purchaser_name VARCHAR(128) NULL,
+  purchaser_email VARCHAR(255) NULL,
+  buyer_email VARCHAR(255) NULL,
+  leader_email VARCHAR(255) NULL,
+  total_amount_with_tax DECIMAL(18, 2) NULL,
+  expected_amount DECIMAL(18, 2) NULL,
+  purchase_order_date DATE NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'Pending',
+  notes TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_purchase_orders_purchase_no (purchase_no),
+  KEY idx_purchase_orders_supplier (supplier),
+  KEY idx_purchase_orders_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -1,110 +1,106 @@
-from __future__ import annotations
-import argparse
-import os
+# src/jobs/feishu_sync_job.py
 import json
+import os
 from typing import Any, Dict, List, Optional, Tuple
-from dotenv import load_dotenv
 
 from src.utils.logger import get_logger
-from src.db.mysql_client import MySQLClient
-from src.clients.feishu_bitable_client import FeishuBitableClient
-from src.utils.flatten import build_feishu_fields_from_normalized
+from src.services.feishu_bitable_client import FeishuBitableClient
 
 logger = get_logger()
 
-def _env(key: str, default: str = "") -> str:
-    v = os.getenv(key)
-    return v if v is not None else default
 
-def ensure_sync_table(db: MySQLClient):
-    db.execute("""CREATE TABLE IF NOT EXISTS invoice_feishu_sync (
-      invoice_id BIGINT PRIMARY KEY,
-      feishu_record_id VARCHAR(64) NULL,
-      synced_at DATETIME NULL,
-      attempt_count INT NOT NULL DEFAULT 0,
-      last_attempt_at DATETIME NULL,
-      sync_error TEXT NULL
-    );""")
+def _cfg_pick(cfg: Dict[str, Any], keys: List[str], default: Any = None) -> Any:
+    for k in keys:
+        v = cfg.get(k)
+        if v is not None and str(v).strip() != "":
+            return v
+    return default
 
-def sync(limit: int = 200) -> Tuple[int, int]:
-    db = MySQLClient()
-    ensure_sync_table(db)
 
-    app_id = _env("FEISHU_APP_ID")
-    app_secret = _env("FEISHU_APP_SECRET")
-    app_token = _env("FEISHU_APP_TOKEN")
-    table_id = _env("FEISHU_TABLE_ID")
-    unique_field = _env("FEISHU_UNIQUE_FIELD", "unique_hash")
+def sync_pending_invoices_to_feishu(db, cfg: Dict[str, Any], limit: int = 50) -> Tuple[int, int]:
+    """
+    db: 你的 main.DB 适配器（有 fetch_all/execute）
+    返回：(success_count, fail_count)
+    """
+    app_id = _cfg_pick(cfg, ["feishu_app_id", "FEISHU_APP_ID"])
+    app_secret = _cfg_pick(cfg, ["feishu_app_secret", "FEISHU_APP_SECRET"])
+    app_token = _cfg_pick(cfg, ["feishu_app_token", "FEISHU_APP_TOKEN", "bitable_app_token"])
+    table_id = _cfg_pick(cfg, ["feishu_table_id", "FEISHU_TABLE_ID", "bitable_table_id"])
 
     if not (app_id and app_secret and app_token and table_id):
-        logger.warning("Feishu config missing, skip sync.")
+        logger.warning("[FeishuSync] missing feishu config -> skip")
         return 0, 0
 
-    client = FeishuBitableClient(app_id, app_secret, app_token, table_id)
+    client = FeishuBitableClient(app_id=app_id, app_secret=app_secret, app_token=app_token, table_id=table_id)
     token = client.get_tenant_token()
     if not token:
-        logger.warning("Cannot get tenant token, skip sync.")
+        logger.warning("[FeishuSync] cannot get tenant token -> skip")
         return 0, 0
 
-    rows = db.fetch_all(
-        """SELECT i.* FROM invoices i
-            LEFT JOIN invoice_feishu_sync s ON s.invoice_id=i.id
-            WHERE s.invoice_id IS NULL OR (s.synced_at IS NULL AND s.attempt_count < 10)
-            ORDER BY i.id ASC
-            LIMIT %s""",
-        (int(limit),)
-    )
+    # 1) 查未同步（用 sync 表做幂等）
+    sql = """
+    SELECT i.*
+    FROM invoices i
+    LEFT JOIN invoice_feishu_sync s ON s.invoice_id = i.id
+    WHERE s.invoice_id IS NULL
+    ORDER BY i.id ASC
+    LIMIT %s
+    """
+    rows = db.fetch_all(sql, (int(limit),))
 
-    ok, fail = 0, 0
+    if not rows:
+        logger.info("[FeishuSync] nothing to sync")
+        return 0, 0
+
+    ok = 0
+    fail = 0
+
     for r in rows:
-        invoice_id = int(r["id"])
-        unique_value = r.get("unique_hash") or ""
+        invoice_id = r.get("id")
         try:
-            db.execute(
-                """INSERT INTO invoice_feishu_sync(invoice_id, attempt_count, last_attempt_at)
-                     VALUES(%s,1,NOW())
-                     ON DUPLICATE KEY UPDATE attempt_count=attempt_count+1, last_attempt_at=NOW()""",
-                (invoice_id,)
-            )
+            # 2) 组装飞书 fields（这里用 invoices 表字段为主，避免再跑一次 Dify）
+            fields = {
+                "invoice_id": str(invoice_id or ""),
+                "unique_hash": str(r.get("unique_hash") or ""),
+                "source_file_path": str(r.get("source_file_path") or ""),
+                "invoice_code": r.get("invoice_code"),
+                "invoice_number": r.get("invoice_number"),
+                "invoice_date": r.get("invoice_date"),
+                "seller_name": r.get("seller_name"),
+                "buyer_name": r.get("buyer_name"),
+                "total_amount_with_tax": r.get("total_amount_with_tax"),
+                "expected_amount": r.get("expected_amount"),
+                "amount_diff": r.get("amount_diff"),
+                "risk_flag": r.get("risk_flag"),
+                "risk_reason": r.get("risk_reason"),  # Feishu client 会把 list/dict json.dumps
+            }
 
-            normalized = r.get("normalized_json") or {}
-            fields = build_feishu_fields_from_normalized(normalized)
-            # Add operational fields
-            fields["invoice_id"] = str(invoice_id)
-            fields["unique_hash"] = unique_value
-            fields["status"] = r.get("status")
+            ok_add, resp = client.add_record(token, fields)
 
-            ok_up, resp, record_id = client.upsert_by_unique_field(token, unique_field, unique_value, fields)
-            if ok_up:
+            if ok_add:
+                record_id = ((resp.get("data") or {}).get("record") or {}).get("record_id")
                 db.execute(
-                    """UPDATE invoice_feishu_sync SET feishu_record_id=%s, synced_at=NOW(), sync_error=NULL
-                         WHERE invoice_id=%s""",
-                    (record_id, invoice_id)
+                    "INSERT INTO invoice_feishu_sync(invoice_id, feishu_record_id, synced_at, sync_error) VALUES(%s,%s,NOW(),NULL)",
+                    (invoice_id, record_id),
                 )
                 ok += 1
             else:
                 db.execute(
-                    """UPDATE invoice_feishu_sync SET sync_error=%s WHERE invoice_id=%s""",
-                    (json.dumps(resp, ensure_ascii=False)[:2000], invoice_id)
+                    "INSERT INTO invoice_feishu_sync(invoice_id, feishu_record_id, synced_at, sync_error) VALUES(%s,NULL,NULL,%s)",
+                    (invoice_id, json.dumps(resp, ensure_ascii=False)[:2000]),
                 )
                 fail += 1
+
         except Exception as e:
             fail += 1
-            db.execute(
-                """UPDATE invoice_feishu_sync SET sync_error=%s WHERE invoice_id=%s""",
-                (repr(e)[:2000], invoice_id)
-            )
-            logger.exception("sync failed invoice_id=%s", invoice_id)
+            try:
+                db.execute(
+                    "INSERT INTO invoice_feishu_sync(invoice_id, feishu_record_id, synced_at, sync_error) VALUES(%s,NULL,NULL,%s)",
+                    (invoice_id, repr(e)[:2000]),
+                )
+            except Exception:
+                pass
+            logger.exception("[FeishuSync] failed invoice_id=%s err=%s", invoice_id, repr(e))
 
-    logger.info("Feishu sync done ok=%s fail=%s", ok, fail)
+    logger.info("[FeishuSync] done ok=%s fail=%s", ok, fail)
     return ok, fail
-
-def main():
-    load_dotenv()
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, default=200)
-    args = ap.parse_args()
-    sync(limit=args.limit)
-
-if __name__ == "__main__":
-    main()
