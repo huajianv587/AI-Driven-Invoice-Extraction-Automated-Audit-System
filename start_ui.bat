@@ -16,4 +16,4 @@ for /f %%i in ('.\.venv\Scripts\python.exe scripts\get_ui_port.py') do set UI_PO
 if "%UI_PORT%"=="" set UI_PORT=8517
 
 echo [ui] Starting Streamlit dashboard on http://127.0.0.1:%UI_PORT% ...
-.\.venv\Scripts\python.exe -m streamlit run src\ui\streamlit_app.py --server.port %UI_PORT%
+.\.venv\Scripts\python.exe -m streamlit run apps\ui\streamlit_app.py --server.port %UI_PORT%

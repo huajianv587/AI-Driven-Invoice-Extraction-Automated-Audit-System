@@ -34,7 +34,7 @@ if errorlevel 1 (
 echo [docker] Starting MySQL and Mailpit...
 docker compose up -d mysql mailpit || exit /b 1
 
-echo [db] Applying schema...
+echo [db] Applying product migrations...
 .\.venv\Scripts\python.exe scripts\apply_schema.py || exit /b 1
 
 .\.venv\Scripts\python.exe scripts\wait_for_http.py http://127.0.0.1:8000/docs 3 >nul 2>&1
@@ -45,22 +45,40 @@ if errorlevel 1 (
   echo [ocr] OCR service is already running.
 )
 
-.\.venv\Scripts\python.exe scripts\wait_for_http.py http://127.0.0.1:%UI_PORT%/?view=dashboard 3 >nul 2>&1
+.\.venv\Scripts\python.exe scripts\wait_for_http.py http://127.0.0.1:8080/healthz 3 >nul 2>&1
 if errorlevel 1 (
-  echo [ui] Starting Streamlit dashboard in a new window...
-  start "Invoice Audit UI" cmd /k ".\\.venv\\Scripts\\python.exe -m streamlit run src\\ui\\streamlit_app.py --server.port %UI_PORT%"
+  echo [api] Starting product API in a new window...
+  start "Invoice Audit API" cmd /k ".\\.venv\\Scripts\\python.exe -m apps.api.main"
 ) else (
-  echo [ui] Streamlit dashboard is already running.
+  echo [api] Product API is already running.
+)
+
+timeout /t 2 >nul
+tasklist /v | findstr /i "Invoice Audit Worker" >nul 2>&1
+if errorlevel 1 (
+  echo [worker] Starting worker in a new window...
+  start "Invoice Audit Worker" cmd /k ".\\.venv\\Scripts\\python.exe -m apps.worker.main"
+) else (
+  echo [worker] Worker window already exists.
+)
+
+.\.venv\Scripts\python.exe scripts\wait_for_http.py http://127.0.0.1:%UI_PORT% 3 >nul 2>&1
+if errorlevel 1 (
+  echo [ui] Starting Streamlit UI in a new window...
+  start "Invoice Audit UI" cmd /k ".\\.venv\\Scripts\\python.exe -m streamlit run apps\\ui\\streamlit_app.py --server.port %UI_PORT%"
+) else (
+  echo [ui] Streamlit UI is already running.
 )
 
 echo [ocr] Waiting for OCR health check...
 .\.venv\Scripts\python.exe scripts\wait_for_ocr.py || exit /b 1
 
-echo [ui] Waiting for dashboard health check...
-.\.venv\Scripts\python.exe scripts\wait_for_http.py http://127.0.0.1:%UI_PORT%/?view=dashboard 120 || exit /b 1
+echo [api] Waiting for API health check...
+.\.venv\Scripts\python.exe scripts\wait_for_http.py http://127.0.0.1:8080/healthz 120 || exit /b 1
+
+echo [ui] Waiting for UI health check...
+.\.venv\Scripts\python.exe scripts\wait_for_http.py http://127.0.0.1:%UI_PORT% 120 || exit /b 1
 
 echo [mailpit] Inbox UI: http://127.0.0.1:8025
+echo [api] API docs: http://127.0.0.1:8080/docs
 echo [ui] Dashboard: http://127.0.0.1:%UI_PORT%
-
-echo [app] Running invoice ingestion...
-.\.venv\Scripts\python.exe -m src.main

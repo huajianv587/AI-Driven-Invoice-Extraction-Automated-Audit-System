@@ -13,6 +13,11 @@ engine = RapidOCR()
 print("RapidOCR model loaded.")
 
 
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True, "engine": "RapidOCR"}
+
+
 @app.post("/ocr")
 async def ocr_endpoint(file: UploadFile = File(...)):
     tmp_path = None

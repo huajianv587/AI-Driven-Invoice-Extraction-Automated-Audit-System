@@ -16,13 +16,13 @@ services:
       - --collation-server=utf8mb4_unicode_ci
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./sql:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
       interval: 5s
       timeout: 5s
       retries: 20
       start_period: 15s
+
   mailpit:
     image: axllent/mailpit:latest
     container_name: invoice-audit-mailpit
@@ -30,6 +30,69 @@ services:
     ports:
       - "${MAILPIT_SMTP_PORT:-1025}:1025"
       - "${MAILPIT_WEB_PORT:-8025}:8025"
+
+  ocr:
+    build: .
+    container_name: invoice-audit-ocr
+    restart: unless-stopped
+    command: ["python", "ocr_server.py"]
+    ports:
+      - "8000:8000"
+
+  api:
+    build: .
+    container_name: invoice-audit-api
+    restart: unless-stopped
+    command: ["python", "-m", "apps.api.main"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      ocr:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      APP_API_HOST: 0.0.0.0
+      APP_API_PORT: 8080
+      OCR_BASE_URL: http://ocr:8000
+      MYSQL_HOST: mysql
+    ports:
+      - "${APP_API_PORT:-8080}:8080"
+    volumes:
+      - ./storage:/app/storage
+
+  worker:
+    build: .
+    container_name: invoice-audit-worker
+    restart: unless-stopped
+    command: ["python", "-m", "apps.worker.main"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      api:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      OCR_BASE_URL: http://ocr:8000
+      MYSQL_HOST: mysql
+    volumes:
+      - ./storage:/app/storage
+
+  ui:
+    build: .
+    container_name: invoice-audit-ui
+    restart: unless-stopped
+    command: ["python", "-m", "streamlit", "run", "apps/ui/streamlit_app.py", "--server.address", "0.0.0.0", "--server.port", "8517"]
+    depends_on:
+      api:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      APP_API_BASE_URL: http://api:8080
+    ports:
+      - "${UI_PORT:-8517}:8517"
 
 volumes:
   mysql_data:

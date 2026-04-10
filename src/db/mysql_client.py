@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import pymysql
 
@@ -30,6 +31,7 @@ class MySQLClient:
         self.db = db
         self.connect_timeout = int(connect_timeout)
         self.autocommit = bool(autocommit)
+        self._in_transaction = False
         self.conn = self._connect()
 
     def _connect(self):
@@ -60,10 +62,44 @@ class MySQLClient:
                 self.conn.close()
         except Exception:
             pass
+        finally:
+            self.conn = None
+            self._in_transaction = False
 
     def _cursor(self):
         self._ensure_conn()
         return self.conn.cursor()
+
+    def begin(self) -> None:
+        if self.autocommit:
+            raise RuntimeError("Transactions are not available when autocommit=True")
+        self._ensure_conn()
+        if self._in_transaction:
+            raise RuntimeError("Transaction already started")
+        self.conn.begin()
+        self._in_transaction = True
+
+    def commit(self) -> None:
+        if self.conn is None:
+            return
+        self.conn.commit()
+        self._in_transaction = False
+
+    def rollback(self) -> None:
+        if self.conn is None:
+            return
+        self.conn.rollback()
+        self._in_transaction = False
+
+    @contextmanager
+    def transaction(self) -> Iterator["MySQLClient"]:
+        self.begin()
+        try:
+            yield self
+            self.commit()
+        except Exception:
+            self.rollback()
+            raise
 
     def fetch_one(self, sql: str, params: Params = None) -> Optional[Dict[str, Any]]:
         cur = self._cursor()
@@ -86,11 +122,11 @@ class MySQLClient:
         cur = self._cursor()
         try:
             cur.execute(sql, params)
-            if not self.autocommit:
+            if not self.autocommit and not self._in_transaction:
                 self.conn.commit()
             return int(cur.rowcount or 0)
         except Exception:
-            if not self.autocommit:
+            if not self.autocommit and not self._in_transaction:
                 self.conn.rollback()
             raise
         finally:
@@ -101,11 +137,11 @@ class MySQLClient:
         try:
             cur.execute(sql, params)
             last_id = cur.lastrowid
-            if not self.autocommit:
+            if not self.autocommit and not self._in_transaction:
                 self.conn.commit()
             return int(last_id or 0)
         except Exception:
-            if not self.autocommit:
+            if not self.autocommit and not self._in_transaction:
                 self.conn.rollback()
             raise
         finally:
@@ -118,11 +154,11 @@ class MySQLClient:
         cur = self._cursor()
         try:
             cur.executemany(sql, seq_params)
-            if not self.autocommit:
+            if not self.autocommit and not self._in_transaction:
                 self.conn.commit()
             return int(cur.rowcount or 0)
         except Exception:
-            if not self.autocommit:
+            if not self.autocommit and not self._in_transaction:
                 self.conn.rollback()
             raise
         finally:
