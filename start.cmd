@@ -26,7 +26,4 @@ echo [ok] Mailpit:   http://127.0.0.1:8025
 echo.
 echo [tips] Open the risk email in Mailpit and click the work-order link to complete the full demo loop.
 
-start "" "http://127.0.0.1:%UI_PORT%/?view=dashboard"
-start "" "http://127.0.0.1:8025"
-
 pause

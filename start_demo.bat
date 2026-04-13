@@ -22,20 +22,21 @@ echo [env] Validating .env ...
 for /f %%i in ('.\.venv\Scripts\python.exe scripts\get_ui_port.py') do set UI_PORT=%%i
 if "%UI_PORT%"=="" set UI_PORT=8517
 
-docker info >nul 2>&1
+echo [docker] Starting MySQL and Mailpit...
+docker compose up -d mysql mailpit >nul 2>&1
 if errorlevel 1 (
   if exist "C:\Program Files\Docker\Docker\Docker Desktop.exe" (
     echo [docker] Starting Docker Desktop...
     start "" "C:\Program Files\Docker\Docker\Docker Desktop.exe"
     .\.venv\Scripts\python.exe scripts\wait_for_docker.py || exit /b 1
+    echo [docker] Starting MySQL and Mailpit...
+    docker compose up -d mysql mailpit || exit /b 1
   ) else (
     echo [docker] Docker Desktop is not running and was not found at the default path.
     exit /b 1
   )
 )
-
-echo [docker] Starting MySQL and Mailpit...
-docker compose up -d mysql mailpit || exit /b 1
+echo [docker] MySQL and Mailpit are ready.
 
 echo [db] Applying schema...
 .\.venv\Scripts\python.exe scripts\apply_schema.py || exit /b 1
@@ -60,6 +61,10 @@ if errorlevel 1 (
 ) else (
   echo [ui] Streamlit dashboard is already running.
 )
+
+echo [ui] Opening dashboard and Mailpit...
+start "" "http://127.0.0.1:%UI_PORT%/?view=dashboard"
+start "" "http://127.0.0.1:8025"
 
 for /f %%i in ('.\.venv\Scripts\python.exe scripts\get_feishu_retry_enabled.py') do set FEISHU_RETRY_ENABLED=%%i
 if "%FEISHU_RETRY_ENABLED%"=="1" (

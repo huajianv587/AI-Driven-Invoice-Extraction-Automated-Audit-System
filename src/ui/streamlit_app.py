@@ -105,6 +105,13 @@ def fmt_dt(value: Any) -> str:
     return str(value)[:19]
 
 
+def fmt_day_label(value: Any) -> str:
+    if value in (None, ""):
+        return "-"
+    text = str(value)
+    return text[5:10] if len(text) >= 10 and text[4] == "-" and text[7] == "-" else text
+
+
 def mailpit_url() -> str:
     return f"http://127.0.0.1:{os.getenv('MAILPIT_WEB_PORT', '8025')}"
 
@@ -486,7 +493,7 @@ def fetch_recent_invoices(db: MySQLClient, limit: int = 100) -> List[Dict[str, A
 def fetch_daily_activity(db: MySQLClient) -> List[Dict[str, Any]]:
     sql = """
     SELECT
-      DATE_FORMAT(created_at, '%%m-%%d') AS day_label,
+      DATE(created_at) AS activity_date,
       COUNT(*) AS total_count,
       SUM(CASE WHEN risk_flag = 1 THEN 1 ELSE 0 END) AS risk_count
     FROM invoices
@@ -494,7 +501,10 @@ def fetch_daily_activity(db: MySQLClient) -> List[Dict[str, Any]]:
     GROUP BY DATE(created_at)
     ORDER BY DATE(created_at) ASC
     """
-    return db.fetch_all(sql)
+    rows = db.fetch_all(sql)
+    for row in rows:
+        row["day_label"] = fmt_day_label(row.get("activity_date"))
+    return rows
 
 
 def fetch_invoice_detail(db: MySQLClient, invoice_id: int) -> Optional[Dict[str, Any]]:
