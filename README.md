@@ -10,32 +10,89 @@ English version first. Chinese version follows below. A dedicated Chinese deploy
 
 This repository is a local, demo-ready invoice audit system for finance operations.
 
-It can:
+It supports:
 
-- read invoice images or PDFs from the local `invoices/` folder
-- run OCR with the local RapidOCR service
-- call Dify for structured extraction when configured
-- fall back to OCR layout parsing when Dify is unavailable
-- compare invoice data against purchase orders in MySQL
-- trigger risk alert emails
-- provide a Streamlit review console for manual work orders
-- sync invoice results to Feishu Bitable
-- replay failed Feishu sync records with manual or scheduled compensation
+- invoice image / PDF ingestion from the local `invoices/` folder
+- OCR extraction through the local RapidOCR service
+- Dify-based structured extraction when configured
+- OCR fallback parsing when Dify is unavailable
+- purchase-order matching against MySQL
+- risk detection for amount mismatch, supplier mismatch, and related signals
+- email alerts with work-order links
+- Streamlit-based review and operations console
+- Feishu Bitable sync with retry and compensation workflows
 
-## 2. Main Features
+## 2. System Architecture
+
+The project is not "just Dify". Dify is only one external AI extraction component inside the full system.
+
+The actual runtime architecture is:
+
+```text
++----------------------+
+| Invoice Files        |
+| invoices/*.jpg/pdf   |
++----------+-----------+
+           |
+           v
++----------------------+
+| OCR Service          |
+| RapidOCR / FastAPI   |
++----------+-----------+
+           |
+           +------------> Dify Workflow
+           |              structured extraction
+           |
+           +------------> OCR Fallback Parser
+                          line-item recovery
+           |
+           v
++----------------------+
+| Ingestion Service    |
+| risk rules + routing |
++----------+-----------+
+           |
+           +------------> MySQL
+           |              invoices / items / events / reviews
+           |
+           +------------> SMTP / Mailpit
+           |              risk alert email
+           |
+           +------------> Feishu Bitable
+           |              sync + retry worker
+           |
+           v
++----------------------+
+| Streamlit UI         |
+| dashboard + review   |
++----------------------+
+```
+
+Component responsibilities:
+
+- `Streamlit UI`: the project’s actual frontend for dashboard, review form, sync recovery, and audit visibility
+- `OCR service`: local text extraction from invoice files
+- `Dify`: optional external AI workflow for structured invoice parsing
+- `OCR fallback parser`: local backup parser when Dify is disabled or fails
+- `Ingestion service`: orchestration layer for parsing, risk checks, database writes, and notifications
+- `MySQL`: persistent storage for invoices, line items, events, review tasks, and sync state
+- `SMTP / Mailpit`: alert delivery layer
+- `Feishu Bitable`: optional collaboration layer for cloud-side data visibility
+
+## 3. Main Features
 
 - OCR + Dify hybrid extraction pipeline
 - enhanced OCR fallback line-item parsing
-- risk checks for amount mismatch, supplier mismatch, and other audit signals
 - duplicate invoice protection and concurrent re-entry protection
+- risk checks for amount mismatch, supplier mismatch, and date anomalies
 - local Mailpit support and real SMTP support
 - Streamlit dashboard for review, audit trail, and machine output
-- Feishu Bitable sync, retry, and auto-compensation worker
+- Feishu Bitable sync, retry, recent failed list, and auto-compensation worker
 - end-to-end demo scripts and regression scripts
 
-## 3. Quick Start
+## 4. Quick Start
 
-### 3.1 Fastest path on a brand-new Windows machine
+### 4.1 Fastest path on a brand-new Windows machine
 
 1. Install `Python 3.10+`, `Git`, and `Docker Desktop`.
 2. Pull this repository.
@@ -50,7 +107,7 @@ This path uses safe local defaults:
 - OCR fallback if Dify is not configured
 - no real SMTP or Feishu secret required
 
-### 3.2 Instant demo data from git
+### 4.2 Instant demo data from git
 
 The repository includes a tracked demo SQL snapshot at [demo/demo_snapshot.sql](./demo/demo_snapshot.sql).
 
@@ -60,9 +117,9 @@ You can import it manually with:
 .\.venv\Scripts\python.exe scripts\import_demo_sql.py
 ```
 
-This gives a fresh machine a preloaded demo invoice, line items, and event history without depending on your current database state.
+This gives a fresh machine a preloaded demo invoice, line items, and event history without depending on your current local database state.
 
-## 4. Local Startup Files
+## 5. Local Startup Files
 
 - [init_fresh_machine.bat](./init_fresh_machine.bat): bootstrap a brand-new Windows machine
 - [start.cmd](./start.cmd): recommended local demo entrypoint
@@ -70,7 +127,7 @@ This gives a fresh machine a preloaded demo invoice, line items, and event histo
 - [start_local.bat](./start_local.bat): batch local startup
 - [start_feishu_retry.bat](./start_feishu_retry.bat): start the Feishu retry worker only
 
-## 5. Important Scripts
+## 6. Important Scripts
 
 - [scripts/check_env.py](./scripts/check_env.py): validate `.env`
 - [scripts/apply_schema.py](./scripts/apply_schema.py): apply MySQL schema
@@ -83,7 +140,7 @@ This gives a fresh machine a preloaded demo invoice, line items, and event histo
 - [scripts/retry_feishu_sync.py](./scripts/retry_feishu_sync.py): manual Feishu compensation
 - [scripts/run_feishu_retry_daemon.py](./scripts/run_feishu_retry_daemon.py): periodic Feishu retry worker
 
-## 6. Configuration
+## 7. Configuration
 
 The tracked [`.env.example`](./.env.example) is intentionally safe for git.
 
@@ -94,24 +151,22 @@ Default local behavior from `.env.example`:
 - Feishu is disabled until `FEISHU_*` values are filled
 - the local demo still works because OCR fallback is enabled
 
-### Optional integrations
+Optional integrations:
 
 - Dify: fill `DIFY_API_KEY`, `DIFY_WORKFLOW_ID`, and optionally adjust `DIFY_IMAGE_KEY`
-- Real email: replace Mailpit SMTP values with your real provider
+- real email: replace Mailpit SMTP values with your real provider
 - Feishu: fill `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_APP_TOKEN`, `FEISHU_TABLE_ID`
 
-### Feishu retry worker
-
-The retry worker is controlled by:
+Feishu retry worker knobs:
 
 - `FEISHU_RETRY_WORKER_ENABLED`
 - `FEISHU_RETRY_INTERVAL_SEC`
 - `FEISHU_RETRY_MODE`
 - `FEISHU_RETRY_BATCH_LIMIT`
 
-If enabled, [start_demo.bat](./start_demo.bat) and [start_local.bat](./start_local.bat) will auto-start the worker.
+If enabled, [start_demo.bat](./start_demo.bat) and [start_local.bat](./start_local.bat) auto-start the worker.
 
-## 7. What A Fresh Machine Can Do Without Extra Secrets
+## 8. What A Fresh Machine Can Do Without Extra Secrets
 
 After `git pull` and [init_fresh_machine.bat](./init_fresh_machine.bat), a new Windows machine can already do this:
 
@@ -130,7 +185,7 @@ What still requires manual configuration:
 - real Dify workflow execution
 - real Feishu Bitable sync
 
-## 8. Notes About Git
+## 9. Notes About Git
 
 Real secrets are not committed.
 
@@ -163,7 +218,70 @@ The git-tracked demo SQL snapshot is the safe replacement for “clone my local 
 - 飞书多维表同步
 - 飞书失败补偿与自动重试
 
-## 2. 当前已经支持的功能
+## 2. 系统架构图说明
+
+这个项目不是“没有前端、前端就是 Dify”。
+
+更准确地说：
+
+- 你自己的前端是 `Streamlit`
+- `Dify` 只是可选的 AI 结构化抽取服务
+- 整个系统还有 OCR、MySQL、邮件、飞书同步和补偿链路
+
+当前运行架构如下：
+
+```text
++----------------------+
+| 发票文件目录          |
+| invoices/*.jpg/pdf   |
++----------+-----------+
+           |
+           v
++----------------------+
+| OCR 服务             |
+| RapidOCR / FastAPI   |
++----------+-----------+
+           |
+           +------------> Dify 工作流
+           |              结构化抽取
+           |
+           +------------> OCR fallback
+                          本地兜底明细解析
+           |
+           v
++----------------------+
+| 发票处理服务          |
+| 解析 / 风控 / 路由    |
++----------+-----------+
+           |
+           +------------> MySQL
+           |              发票 / 明细 / 事件 / 复核
+           |
+           +------------> SMTP / Mailpit
+           |              风险预警邮件
+           |
+           +------------> 飞书多维表
+           |              同步 / 重试 / 补偿
+           |
+           v
++----------------------+
+| Streamlit 前端        |
+| 仪表盘 / 工单 / 运维   |
++----------------------+
+```
+
+各层职责：
+
+- `Streamlit 前端`：项目真正的前端界面，负责仪表盘、工单页、飞书补偿、审计查看
+- `OCR 服务`：本地发票识别入口
+- `Dify`：可选 AI 结构化抽取能力
+- `OCR fallback`：Dify 失败时的本地兜底解析器
+- `发票处理服务`：整条链路的业务编排中心，负责解析、风控、入库、通知
+- `MySQL`：主数据存储，保存发票、明细、事件、复核任务、同步状态
+- `SMTP / Mailpit`：邮件预警层
+- `飞书多维表`：云端协同与展示层
+
+## 3. 当前已经支持的功能
 
 - 本地 OCR 服务识别发票
 - Dify 文件上传与工作流调用
@@ -175,7 +293,7 @@ The git-tracked demo SQL snapshot is the safe replacement for “clone my local 
 - Streamlit 仪表盘、工单页、事件日志、机器输出查看
 - 飞书多维表写入、失败重试、最近失败列表、定时补偿 worker
 
-## 3. 本地最常用的入口
+## 4. 本地最常用的入口
 
 - [init_fresh_machine.bat](./init_fresh_machine.bat)：新电脑初始化
 - [start.cmd](./start.cmd)：推荐的一键本地 demo 入口
@@ -183,7 +301,7 @@ The git-tracked demo SQL snapshot is the safe replacement for “clone my local 
 - [start_local.bat](./start_local.bat)：完整本地批量模式
 - [start_feishu_retry.bat](./start_feishu_retry.bat)：只启动飞书补偿进程
 
-## 4. git 拉下来后默认可用的能力
+## 5. git 拉下来后默认可用的能力
 
 如果你不填写任何真实外部密钥，只使用仓库里的默认配置，也可以直接跑本地 demo。
 
@@ -197,7 +315,7 @@ The git-tracked demo SQL snapshot is the safe replacement for “clone my local 
 
 也就是说，新机器不填真实 Dify / 飞书 / 邮件账号，也能看到完整的本地演示效果。
 
-## 5. demo SQL
+## 6. demo SQL
 
 仓库里已经新增了可直接导入的 demo 数据文件：
 
