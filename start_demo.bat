@@ -16,6 +16,9 @@ if not exist .venv\Scripts\python.exe (
 echo [pip] Installing runtime dependencies...
 .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt || exit /b 1
 
+echo [env] Validating .env ...
+.\.venv\Scripts\python.exe scripts\check_env.py || exit /b 1
+
 for /f %%i in ('.\.venv\Scripts\python.exe scripts\get_ui_port.py') do set UI_PORT=%%i
 if "%UI_PORT%"=="" set UI_PORT=8517
 
@@ -40,7 +43,7 @@ echo [db] Applying schema...
 echo [demo] Resetting previous demo data...
 .\.venv\Scripts\python.exe scripts\reset_demo_state.py || exit /b 1
 
-.\.venv\Scripts\python.exe scripts\wait_for_http.py http://127.0.0.1:8000/docs 3 >nul 2>&1
+.\.venv\Scripts\python.exe scripts\wait_for_ocr.py 3 >nul 2>&1
 if errorlevel 1 (
   echo [ocr] Starting OCR service in a new window...
   start "Invoice Audit OCR" cmd /k ".\\.venv\\Scripts\\python.exe ocr_server.py"
@@ -56,6 +59,14 @@ if errorlevel 1 (
   .\.venv\Scripts\python.exe scripts\wait_for_http.py http://127.0.0.1:%UI_PORT%/?view=dashboard 120 || exit /b 1
 ) else (
   echo [ui] Streamlit dashboard is already running.
+)
+
+for /f %%i in ('.\.venv\Scripts\python.exe scripts\get_feishu_retry_enabled.py') do set FEISHU_RETRY_ENABLED=%%i
+if "%FEISHU_RETRY_ENABLED%"=="1" (
+  echo [feishu] Starting Feishu retry worker in a new window...
+  start "Invoice Audit Feishu Retry" cmd /k ".\\start_feishu_retry.bat"
+) else (
+  echo [feishu] Retry worker is disabled.
 )
 
 echo [demo] Running single-invoice demo ingestion...

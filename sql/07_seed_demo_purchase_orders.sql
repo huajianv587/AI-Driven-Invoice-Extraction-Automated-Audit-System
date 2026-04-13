@@ -33,9 +33,27 @@ ON DUPLICATE KEY UPDATE
   supplier=VALUES(supplier),
   supplier_name=VALUES(supplier_name),
   purchaser_name=VALUES(purchaser_name),
-  purchaser_email=VALUES(purchaser_email),
-  buyer_email=VALUES(buyer_email),
-  leader_email=VALUES(leader_email),
+  purchaser_email=IF(
+    purchase_orders.purchaser_email IS NULL
+    OR purchase_orders.purchaser_email = ''
+    OR purchase_orders.purchaser_email LIKE '%@local.test',
+    VALUES(purchaser_email),
+    purchase_orders.purchaser_email
+  ),
+  buyer_email=IF(
+    purchase_orders.buyer_email IS NULL
+    OR purchase_orders.buyer_email = ''
+    OR purchase_orders.buyer_email LIKE '%@local.test',
+    VALUES(buyer_email),
+    purchase_orders.buyer_email
+  ),
+  leader_email=IF(
+    purchase_orders.leader_email IS NULL
+    OR purchase_orders.leader_email = ''
+    OR purchase_orders.leader_email LIKE '%@local.test',
+    VALUES(leader_email),
+    purchase_orders.leader_email
+  ),
   total_amount_with_tax=VALUES(total_amount_with_tax),
   expected_amount=VALUES(expected_amount),
   purchase_order_date=VALUES(purchase_order_date),

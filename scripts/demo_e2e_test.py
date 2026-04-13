@@ -35,12 +35,32 @@ def wait_http(url: str, timeout_sec: int = 120) -> None:
     while time.time() < deadline:
         try:
             resp = requests.get(url, timeout=5)
-            if 200 <= resp.status_code < 500:
+            if 200 <= resp.status_code < 400:
                 return
         except Exception as exc:
             last_error = exc
         time.sleep(2)
     raise RuntimeError(f"Endpoint not ready: {url} -> {last_error}")
+
+
+def wait_ocr(base_url: str, timeout_sec: int = 120) -> None:
+    base_url = base_url.rstrip("/")
+    deadline = time.time() + timeout_sec
+    last_error = None
+
+    while time.time() < deadline:
+        try:
+            resp = requests.get(f"{base_url}/openapi.json", timeout=5)
+            resp.raise_for_status()
+            paths = (resp.json() or {}).get("paths") or {}
+            if "/ocr" in paths:
+                return
+            last_error = "missing /ocr route"
+        except Exception as exc:
+            last_error = exc
+        time.sleep(2)
+
+    raise RuntimeError(f"OCR endpoint not ready: {base_url} -> {last_error}")
 
 
 def ensure_process(url: str, command: list[str], timeout_sec: int = 120):
@@ -61,6 +81,24 @@ def ensure_process(url: str, command: list[str], timeout_sec: int = 120):
         return proc
 
 
+def ensure_ocr_process(base_url: str, command: list[str], timeout_sec: int = 120):
+    try:
+        wait_ocr(base_url, timeout_sec=5)
+        return None
+    except Exception:
+        env = dict(os.environ)
+        env["PYTHONUTF8"] = "1"
+        proc = subprocess.Popen(
+            command,
+            cwd=str(ROOT),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        wait_ocr(base_url, timeout_sec=timeout_sec)
+        return proc
+
+
 def fetch_mailpit_message() -> dict:
     inbox = requests.get("http://127.0.0.1:8025/api/v1/messages", timeout=10).json()
     messages = inbox.get("messages", [])
@@ -73,16 +111,18 @@ def fetch_mailpit_message() -> dict:
 
 
 def main() -> None:
+    run_cmd([PYTHON, "scripts/check_env.py"])
     load_env(override=True)
     cfg = load_flat_config()
     ui_port = int(cfg["UI_PORT"])
+    ocr_base_url = str(cfg["OCR_BASE_URL"]).rstrip("/")
 
     run_cmd(["docker", "compose", "up", "-d", "mysql", "mailpit"])
     run_cmd([PYTHON, "scripts/apply_schema.py"])
     run_cmd([PYTHON, "scripts/reset_demo_state.py"])
 
     started = []
-    ocr_proc = ensure_process("http://127.0.0.1:8000/docs", [PYTHON, "ocr_server.py"], timeout_sec=120)
+    ocr_proc = ensure_ocr_process(ocr_base_url, [PYTHON, "ocr_server.py"], timeout_sec=120)
     if ocr_proc:
         started.append(ocr_proc)
     ui_proc = ensure_process(
@@ -139,6 +179,15 @@ def main() -> None:
             """,
             (result.invoice_id,),
         )
+        items = db.fetch_all(
+            """
+            SELECT item_name, item_spec, item_quantity, item_unit_price, item_amount, tax_rate, tax_amount
+            FROM invoice_items
+            WHERE invoice_id=%s
+            ORDER BY id ASC
+            """,
+            (result.invoice_id,),
+        )
         events = db.fetch_all(
             """
             SELECT event_type, event_status
@@ -154,6 +203,8 @@ def main() -> None:
         missing = sorted(required_events - actual_events)
         if missing:
             raise RuntimeError(f"Missing expected events: {missing}")
+        if not items:
+            raise RuntimeError("No invoice_items were parsed; OCR fallback / Dify extraction is incomplete.")
 
         summary = {
             "invoice_result": {
@@ -165,6 +216,8 @@ def main() -> None:
             "work_order_link": form_link,
             "invoice": invoice,
             "review_task": review_task,
+            "item_count": len(items),
+            "items": items,
             "events": events,
         }
         print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))

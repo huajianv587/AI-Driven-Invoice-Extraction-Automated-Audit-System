@@ -15,7 +15,7 @@ def main() -> None:
     while time.time() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=5) as resp:
-                if 200 <= resp.status < 500:
+                if 200 <= resp.status < 400:
                     print(f"[ok] HTTP endpoint is ready: {url}")
                     return
         except Exception as exc:

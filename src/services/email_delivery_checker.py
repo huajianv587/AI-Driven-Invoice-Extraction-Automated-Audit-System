@@ -85,7 +85,13 @@ class EmailDeliveryChecker:
                 server.starttls()
                 server.ehlo()
 
-            if self.smtp_user and self.smtp_pass:
+            supports_auth = False
+            try:
+                supports_auth = bool(server.has_extn("auth"))
+            except Exception:
+                supports_auth = False
+
+            if self.smtp_user and self.smtp_pass and supports_auth:
                 server.login(self.smtp_user, self.smtp_pass)
 
             server.sendmail(self.from_email, recipients, msg.as_string())

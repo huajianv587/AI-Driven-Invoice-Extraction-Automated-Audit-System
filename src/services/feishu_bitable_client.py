@@ -24,6 +24,15 @@ class FeishuBitableClient:
         self.app_token = app_token
         self.table_id = table_id
 
+    @staticmethod
+    def _mask_secret(value: Optional[str], keep: int = 4) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if len(text) <= keep * 2:
+            return "*" * len(text)
+        return f"{text[:keep]}...{text[-keep:]}"
+
     def get_tenant_token(self) -> Optional[str]:
         url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
         resp = requests.post(
@@ -32,7 +41,15 @@ class FeishuBitableClient:
             timeout=20,
         )
         data = resp.json()
-        print("[Feishu] tenant_token resp:", data)
+        print(
+            "[Feishu] tenant_token resp:",
+            {
+                "code": data.get("code"),
+                "msg": data.get("msg"),
+                "expire": data.get("expire"),
+                "tenant_access_token": self._mask_secret(data.get("tenant_access_token")),
+            },
+        )
         return data.get("tenant_access_token")
 
     def _get_fields_meta(self, token: str) -> Dict[str, int]:

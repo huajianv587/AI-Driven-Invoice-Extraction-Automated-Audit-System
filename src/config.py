@@ -79,6 +79,10 @@ class FeishuCfg:
     bitable_app_token: str
     bitable_table_id: str
     sync_mode: str
+    retry_worker_enabled: bool
+    retry_interval_sec: int
+    retry_mode: str
+    retry_batch_limit: int
 
 
 @dataclass
@@ -150,6 +154,10 @@ class AppCfg:
             "FEISHU_TABLE_ID": self.feishu.bitable_table_id,
             "bitable_table_id": self.feishu.bitable_table_id,
             "FEISHU_SYNC_MODE": self.feishu.sync_mode,
+            "FEISHU_RETRY_WORKER_ENABLED": self.feishu.retry_worker_enabled,
+            "FEISHU_RETRY_INTERVAL_SEC": self.feishu.retry_interval_sec,
+            "FEISHU_RETRY_MODE": self.feishu.retry_mode,
+            "FEISHU_RETRY_BATCH_LIMIT": self.feishu.retry_batch_limit,
             "SMTP_HOST": self.email.smtp_host,
             "SMTP_PORT": self.email.smtp_port,
             "SMTP_USER": self.email.smtp_user,
@@ -183,7 +191,7 @@ def load_config() -> AppCfg:
     )
 
     ocr = OcrCfg(
-        base_url=_env_pick(["OCR_BASE_URL"], "http://127.0.0.1:8000") or "http://127.0.0.1:8000",
+        base_url=_env_pick(["OCR_BASE_URL"], "http://127.0.0.1:8001") or "http://127.0.0.1:8001",
         retry_max=int(_env_pick(["OCR_RETRY_MAX"], "5") or "5"),
         retry_sleep=float(_env_pick(["OCR_RETRY_SLEEP_SEC"], "2.0") or "2.0"),
     )
@@ -203,6 +211,10 @@ def load_config() -> AppCfg:
         bitable_app_token=_env_pick(["FEISHU_APP_TOKEN", "BITABLE_APP_TOKEN"], "") or "",
         bitable_table_id=_env_pick(["FEISHU_TABLE_ID", "BITABLE_TABLE_ID"], "") or "",
         sync_mode=(_env_pick(["FEISHU_SYNC_MODE"], "off") or "off").lower(),
+        retry_worker_enabled=(_env_pick(["FEISHU_RETRY_WORKER_ENABLED"], "False") or "False").lower() in ("true", "1", "yes"),
+        retry_interval_sec=int(_env_pick(["FEISHU_RETRY_INTERVAL_SEC"], "300") or "300"),
+        retry_mode=(_env_pick(["FEISHU_RETRY_MODE"], "failed") or "failed").lower(),
+        retry_batch_limit=int(_env_pick(["FEISHU_RETRY_BATCH_LIMIT"], "20") or "20"),
     )
 
     use_tls = (_env_pick(["SMTP_USE_TLS"], "True") or "True").lower() in ("true", "1", "yes")

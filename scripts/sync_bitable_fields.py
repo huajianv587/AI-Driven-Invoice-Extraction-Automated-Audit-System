@@ -127,6 +127,10 @@ if __name__ == "__main__":
 
     # 1) 你的 MySQL 字段清单（保持不变）
     mysql_columns = [
+        ("invoice_id", "varchar"),
+        ("ingest_action", "varchar"),
+        ("file_name", "varchar"),
+        ("purchase_order_no", "varchar"),
         ("amount_diff", "decimal"),
         ("amount_in_words", "varchar"),
         ("buyer_address", "varchar"),

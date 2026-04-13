@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 from src.config import load_env, load_flat_config
 from src.db.mysql_client import MySQLClient
+from src.jobs.feishu_sync_job import sync_invoices_to_feishu
 from src.services.integration_checks import check_dify, check_feishu, check_http_endpoint, check_smtp
 
 
@@ -393,6 +394,80 @@ def fetch_metrics(db: MySQLClient) -> Dict[str, Any]:
     return db.fetch_one(sql) or {"total_count": 0, "risk_count": 0, "pending_count": 0, "today_count": 0}
 
 
+def fetch_feishu_sync_summary(db: MySQLClient) -> Dict[str, Any]:
+    sql = """
+    SELECT
+      SUM(CASE WHEN s.invoice_id IS NULL THEN 1 ELSE 0 END) AS pending_count,
+      SUM(CASE WHEN s.invoice_id IS NOT NULL AND (s.feishu_record_id IS NULL OR s.sync_error IS NOT NULL) THEN 1 ELSE 0 END) AS failed_count,
+      SUM(CASE WHEN s.feishu_record_id IS NOT NULL AND (s.sync_error IS NULL OR s.sync_error = '') THEN 1 ELSE 0 END) AS synced_count
+    FROM invoices i
+    LEFT JOIN invoice_feishu_sync s ON s.invoice_id = i.id
+    """
+    return db.fetch_one(sql) or {"pending_count": 0, "failed_count": 0, "synced_count": 0}
+
+
+def fetch_recent_failed_feishu_syncs(db: MySQLClient, limit: int = 10) -> List[Dict[str, Any]]:
+    sql = """
+    SELECT
+      s.invoice_id,
+      i.seller_name,
+      i.invoice_code,
+      i.invoice_number,
+      i.purchase_order_no,
+      s.sync_error,
+      s.updated_at
+    FROM invoice_feishu_sync s
+    INNER JOIN invoices i ON i.id = s.invoice_id
+    WHERE s.feishu_record_id IS NULL OR s.sync_error IS NOT NULL
+    ORDER BY s.updated_at DESC, s.id DESC
+    LIMIT %s
+    """
+    return db.fetch_all(sql, (int(limit),))
+
+
+def summarize_sync_error(value: Any, limit: int = 110) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "-"
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit - 3]}..."
+
+
+def feishu_retry_worker_summary(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "enabled": bool(cfg.get("FEISHU_RETRY_WORKER_ENABLED")),
+        "interval_sec": safe_int(cfg.get("FEISHU_RETRY_INTERVAL_SEC")),
+        "mode": str(cfg.get("FEISHU_RETRY_MODE") or "failed"),
+        "limit": safe_int(cfg.get("FEISHU_RETRY_BATCH_LIMIT")),
+    }
+
+
+def run_feishu_sync_action(
+    db: MySQLClient,
+    cfg: Dict[str, Any],
+    *,
+    mode: str = "failed",
+    limit: int = 20,
+    invoice_ids: Optional[List[int]] = None,
+) -> None:
+    ok_count, fail_count, details = sync_invoices_to_feishu(
+        db,
+        cfg,
+        mode=mode,
+        limit=limit,
+        invoice_ids=invoice_ids,
+    )
+    if ok_count and not fail_count:
+        st.success(f"Feishu sync completed. ok={ok_count}, fail={fail_count}")
+    elif ok_count or fail_count:
+        st.warning(f"Feishu sync finished with mixed result. ok={ok_count}, fail={fail_count}")
+    else:
+        st.info("No matching invoices needed Feishu sync recovery.")
+    if details:
+        st.caption(json.dumps(details, ensure_ascii=False))
+
+
 def fetch_recent_invoices(db: MySQLClient, limit: int = 100) -> List[Dict[str, Any]]:
     sql = """
     SELECT
@@ -567,6 +642,9 @@ def display_invoice_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def render_dashboard(cfg: Dict[str, Any]) -> None:
     db = db_client(cfg)
     metrics = fetch_metrics(db)
+    feishu_sync = fetch_feishu_sync_summary(db)
+    feishu_retry = feishu_retry_worker_summary(cfg)
+    failed_sync_rows = fetch_recent_failed_feishu_syncs(db, limit=8)
     invoices = fetch_recent_invoices(db, limit=200)
     activity = fetch_daily_activity(db)
     checks = integration_status(cfg)
@@ -658,6 +736,65 @@ def render_dashboard(cfg: Dict[str, Any]) -> None:
             with status_cols[idx % 2]:
                 status_card(row["name"], row["status"], row["message"], row["detail"])
         st.markdown(f"[Open Mailpit Inbox]({mailpit_url()})")
+        section_title("Feishu Recovery", "Recover failed sync rows or replay pending invoice records to Feishu Bitable.")
+        metric_cols = st.columns(3)
+        with metric_cols[0]:
+            metric_card("Synced", str(feishu_sync.get("synced_count") or 0), "Rows already mirrored to Feishu.")
+        with metric_cols[1]:
+            metric_card("Pending", str(feishu_sync.get("pending_count") or 0), "Invoices that have not been pushed yet.", "warn")
+        with metric_cols[2]:
+            metric_card("Failed", str(feishu_sync.get("failed_count") or 0), "Rows eligible for compensation replay.", "danger")
+        action_cols = st.columns(2)
+        with action_cols[0]:
+            if st.button("Retry Failed Syncs", use_container_width=True):
+                run_feishu_sync_action(db, cfg, mode="failed", limit=20)
+        with action_cols[1]:
+            if st.button("Sync Pending Rows", use_container_width=True):
+                run_feishu_sync_action(db, cfg, mode="pending", limit=20)
+        worker_label = "Enabled" if feishu_retry["enabled"] else "Disabled"
+        worker_tone = "ok" if feishu_retry["enabled"] else "warn"
+        st.markdown(
+            f"Auto-retry worker: {badge(worker_label, worker_tone)} "
+            f"mode `{feishu_retry['mode']}` every `{feishu_retry['interval_sec'] or 300}s` "
+            f"(batch `{feishu_retry['limit'] or 20}`).",
+            unsafe_allow_html=True,
+        )
+        if failed_sync_rows:
+            display_failed_rows = [
+                {
+                    "Invoice ID": row.get("invoice_id"),
+                    "Seller": row.get("seller_name") or "-",
+                    "Invoice No.": row.get("invoice_number") or row.get("invoice_code") or "-",
+                    "PO": row.get("purchase_order_no") or "-",
+                    "Last Error": summarize_sync_error(row.get("sync_error")),
+                    "Updated": fmt_dt(row.get("updated_at")),
+                }
+                for row in failed_sync_rows
+            ]
+            st.dataframe(display_failed_rows, use_container_width=True)
+            failed_option_map = {
+                (
+                    f"#{row.get('invoice_id')} | "
+                    f"{row.get('seller_name') or 'N/A'} | "
+                    f"{row.get('invoice_number') or row.get('invoice_code') or 'N/A'}"
+                ): int(row["invoice_id"])
+                for row in failed_sync_rows
+            }
+            selected_failed_label = st.selectbox(
+                "Recent failed syncs",
+                list(failed_option_map.keys()),
+                key="failed-feishu-sync-select",
+            )
+            if st.button("Retry Selected Failed Sync", use_container_width=True):
+                run_feishu_sync_action(
+                    db,
+                    cfg,
+                    mode="recoverable",
+                    limit=1,
+                    invoice_ids=[failed_option_map[selected_failed_label]],
+                )
+        else:
+            st.info("No recent failed Feishu sync rows.")
         section_title("Priority Alerts", "Most material deltas surfaced by the policy engine.")
         if risk_rows:
             for row in risk_rows[:3]:
@@ -733,6 +870,13 @@ def render_dashboard(cfg: Dict[str, Any]) -> None:
                 switch_view("dashboard", invoice_id=invoice["id"])
         with action_cols[2]:
             st.markdown(f"[Check Risk Email in Mailpit]({mailpit_url()})")
+
+        if not detail.get("sync") or detail["sync"].get("sync_error") or not detail["sync"].get("feishu_record_id"):
+            retry_label = "Retry Feishu Sync" if detail.get("sync") else "Push To Feishu"
+            if st.button(retry_label, key=f"retry-feishu-{invoice['id']}", use_container_width=True):
+                run_feishu_sync_action(db, cfg, mode="recoverable", limit=1, invoice_ids=[int(invoice["id"])])
+                detail = fetch_invoice_detail(db, int(invoice["id"]))
+                invoice = detail["invoice"]
 
         st.markdown(
             f"""

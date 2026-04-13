@@ -9,7 +9,7 @@ class OCRClient:
     """
     main 通过它调用 OCR 微服务（FastAPI）
     """
-    def __init__(self, base_url: str = "http://127.0.0.1:8000"):
+    def __init__(self, base_url: str = "http://127.0.0.1:8001"):
         self.base_url = base_url.rstrip("/")
 
     def ocr_image(self, image_path: str, timeout_sec: int = 60) -> Dict[str, Any]:
