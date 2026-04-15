@@ -11,6 +11,16 @@ ROOT = Path(__file__).resolve().parents[1]
 SQL_DIR = ROOT / "sql"
 
 
+ADD_COLUMNS = {
+    "app_refresh_tokens": [
+        ("ip_address", "VARCHAR(64) NULL"),
+        ("device_label", "VARCHAR(128) NULL"),
+        ("last_seen_at", "DATETIME NULL"),
+        ("revoked_reason", "VARCHAR(64) NULL"),
+    ],
+}
+
+
 def load_settings():
     load_dotenv(ROOT / ".env")
     return {
@@ -103,6 +113,45 @@ def apply_schema(conn):
         conn.commit()
 
 
+def column_exists(conn, table_name: str, column_name: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS column_count
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND table_name = %s
+              AND column_name = %s
+            """,
+            (table_name, column_name),
+        )
+        row = cur.fetchone() or {}
+    return int(row.get("column_count") or 0) > 0
+
+
+def ensure_additive_columns(conn):
+    with conn.cursor() as cur:
+        for table_name, columns in ADD_COLUMNS.items():
+            cur.execute(
+                """
+                SELECT COUNT(*) AS table_count
+                FROM information_schema.tables
+                WHERE table_schema = DATABASE()
+                  AND table_name = %s
+                """,
+                (table_name,),
+            )
+            if int((cur.fetchone() or {}).get("table_count") or 0) == 0:
+                continue
+
+            for column_name, definition in columns:
+                if column_exists(conn, table_name, column_name):
+                    continue
+                print(f"[alter] {table_name}.{column_name}")
+                cur.execute(f"ALTER TABLE `{table_name}` ADD COLUMN `{column_name}` {definition}")
+    conn.commit()
+
+
 def main():
     if not SQL_DIR.exists():
         raise RuntimeError(f"SQL directory not found: {SQL_DIR}")
@@ -111,6 +160,7 @@ def main():
     conn = wait_for_mysql(settings)
     try:
         apply_schema(conn)
+        ensure_additive_columns(conn)
     finally:
         conn.close()
     print("[ok] Schema applied successfully.")

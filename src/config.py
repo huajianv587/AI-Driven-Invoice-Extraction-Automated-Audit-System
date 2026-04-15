@@ -99,7 +99,27 @@ class EmailCfg:
 
 
 @dataclass
+class AuthCfg:
+    api_port: int
+    frontend_port: int
+    frontend_origin: str
+    jwt_secret: str
+    jwt_old_secrets: str
+    access_ttl_sec: int
+    refresh_ttl_days: int
+    refresh_cookie_name: str
+    cookie_secure: bool
+    login_rate_limit_max: int
+    login_rate_limit_window_sec: int
+    bootstrap_admin_name: str
+    bootstrap_admin_email: str
+    bootstrap_admin_password: str
+
+
+@dataclass
 class AppCfg:
+    app_env: str
+    connector_health_ttl_sec: int
     invoices_dir: str
     purchase_no: str
     ui_port: int
@@ -108,16 +128,27 @@ class AppCfg:
     dify: DifyCfg
     feishu: FeishuCfg
     email: EmailCfg
+    auth: AuthCfg
     anomaly_form_base_url: str
 
     def as_flat_dict(self) -> Dict[str, Any]:
         return {
+            "app_env": self.app_env,
+            "APP_ENV": self.app_env,
+            "connector_health_ttl_sec": self.connector_health_ttl_sec,
+            "CONNECTOR_HEALTH_TTL_SEC": self.connector_health_ttl_sec,
             "invoices_dir": self.invoices_dir,
             "purchase_no": self.purchase_no,
             "PO_NO": self.purchase_no,
             "PURCHASE_NO": self.purchase_no,
             "ui_port": self.ui_port,
             "UI_PORT": self.ui_port,
+            "api_port": self.auth.api_port,
+            "API_PORT": self.auth.api_port,
+            "frontend_port": self.auth.frontend_port,
+            "FRONTEND_PORT": self.auth.frontend_port,
+            "frontend_origin": self.auth.frontend_origin,
+            "FRONTEND_ORIGIN": self.auth.frontend_origin,
             "ocr_base_url": self.ocr.base_url,
             "OCR_BASE_URL": self.ocr.base_url,
             "OCR_RETRY_MAX": self.ocr.retry_max,
@@ -167,6 +198,28 @@ class AppCfg:
             "ALERT_FALLBACK_TO": self.email.alert_fallback_to,
             "SMTP_USE_TLS": self.email.use_tls,
             "SMTP_USE_SSL": self.email.use_ssl,
+            "auth_jwt_secret": self.auth.jwt_secret,
+            "AUTH_JWT_SECRET": self.auth.jwt_secret,
+            "auth_jwt_old_secrets": self.auth.jwt_old_secrets,
+            "AUTH_JWT_OLD_SECRETS": self.auth.jwt_old_secrets,
+            "auth_access_ttl_sec": self.auth.access_ttl_sec,
+            "AUTH_ACCESS_TTL_SEC": self.auth.access_ttl_sec,
+            "auth_refresh_ttl_days": self.auth.refresh_ttl_days,
+            "AUTH_REFRESH_TTL_DAYS": self.auth.refresh_ttl_days,
+            "auth_cookie_name": self.auth.refresh_cookie_name,
+            "AUTH_COOKIE_NAME": self.auth.refresh_cookie_name,
+            "auth_cookie_secure": self.auth.cookie_secure,
+            "AUTH_COOKIE_SECURE": self.auth.cookie_secure,
+            "auth_login_rate_limit_max": self.auth.login_rate_limit_max,
+            "AUTH_LOGIN_RATE_LIMIT_MAX": self.auth.login_rate_limit_max,
+            "auth_login_rate_limit_window_sec": self.auth.login_rate_limit_window_sec,
+            "AUTH_LOGIN_RATE_LIMIT_WINDOW_SEC": self.auth.login_rate_limit_window_sec,
+            "auth_bootstrap_admin_name": self.auth.bootstrap_admin_name,
+            "AUTH_BOOTSTRAP_ADMIN_NAME": self.auth.bootstrap_admin_name,
+            "auth_bootstrap_admin_email": self.auth.bootstrap_admin_email,
+            "AUTH_BOOTSTRAP_ADMIN_EMAIL": self.auth.bootstrap_admin_email,
+            "auth_bootstrap_admin_password": self.auth.bootstrap_admin_password,
+            "AUTH_BOOTSTRAP_ADMIN_PASSWORD": self.auth.bootstrap_admin_password,
             "ANOMALY_FORM_BASE_URL": self.anomaly_form_base_url,
         }
 
@@ -174,6 +227,9 @@ class AppCfg:
 def load_config() -> AppCfg:
     load_env()
     root = project_root()
+
+    app_env = (_env_pick(["APP_ENV", "DEPLOY_ENV"], "local") or "local").strip().lower()
+    connector_health_ttl_sec = int(_env_pick(["CONNECTOR_HEALTH_TTL_SEC"], "60") or "60")
 
     invoices_dir = _resolve_path(
         _env_pick(["INVOICES_DIR", "IMAGE_FOLDER"], "./invoices") or "./invoices",
@@ -241,7 +297,31 @@ def load_config() -> AppCfg:
         or "finance-demo@local.test",
     )
 
+    frontend_port = int(_env_pick(["FRONTEND_PORT"], "3000") or "3000")
+    api_port = int(_env_pick(["API_PORT"], "8009") or "8009")
+    auth = AuthCfg(
+        api_port=api_port,
+        frontend_port=frontend_port,
+        frontend_origin=_env_pick(["FRONTEND_ORIGIN"], f"http://127.0.0.1:{frontend_port}")
+        or f"http://127.0.0.1:{frontend_port}",
+        jwt_secret=_env_pick(["AUTH_JWT_SECRET"], "change-me-local-dev-secret") or "change-me-local-dev-secret",
+        jwt_old_secrets=_env_pick(["AUTH_JWT_OLD_SECRETS"], "") or "",
+        access_ttl_sec=int(_env_pick(["AUTH_ACCESS_TTL_SEC"], "900") or "900"),
+        refresh_ttl_days=int(_env_pick(["AUTH_REFRESH_TTL_DAYS"], "14") or "14"),
+        refresh_cookie_name=_env_pick(["AUTH_COOKIE_NAME"], "invoice_refresh_token") or "invoice_refresh_token",
+        cookie_secure=(_env_pick(["AUTH_COOKIE_SECURE"], "False") or "False").lower() in ("true", "1", "yes"),
+        login_rate_limit_max=int(_env_pick(["AUTH_LOGIN_RATE_LIMIT_MAX"], "5") or "5"),
+        login_rate_limit_window_sec=int(_env_pick(["AUTH_LOGIN_RATE_LIMIT_WINDOW_SEC"], "900") or "900"),
+        bootstrap_admin_name=_env_pick(["AUTH_BOOTSTRAP_ADMIN_NAME"], "Platform Admin") or "Platform Admin",
+        bootstrap_admin_email=_env_pick(["AUTH_BOOTSTRAP_ADMIN_EMAIL"], "admin@invoice-audit.local")
+        or "admin@invoice-audit.local",
+        bootstrap_admin_password=_env_pick(["AUTH_BOOTSTRAP_ADMIN_PASSWORD"], "ChangeMe123!")
+        or "ChangeMe123!",
+    )
+
     return AppCfg(
+        app_env=app_env,
+        connector_health_ttl_sec=connector_health_ttl_sec,
         invoices_dir=invoices_dir,
         purchase_no=purchase_no,
         ui_port=ui_port,
@@ -250,6 +330,7 @@ def load_config() -> AppCfg:
         dify=dify,
         feishu=feishu,
         email=email,
+        auth=auth,
         anomaly_form_base_url=_env_pick(
             ["ANOMALY_FORM_BASE_URL"],
             f"http://127.0.0.1:{ui_port}/?view=anomaly_form",

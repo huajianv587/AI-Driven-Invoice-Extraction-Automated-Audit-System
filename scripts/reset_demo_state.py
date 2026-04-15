@@ -16,11 +16,15 @@ from src.config import load_env, load_flat_config
 
 
 TABLES_TO_CLEAR = [
+    "invoice_state_transitions",
     "invoice_review_tasks",
     "invoice_feishu_sync",
     "invoice_events",
     "invoice_items",
     "invoices",
+    "app_security_events",
+    "app_login_attempts",
+    "app_refresh_tokens",
 ]
 
 
@@ -59,6 +63,8 @@ def reset_mysql_tables(cfg) -> None:
 def main() -> None:
     load_env(override=True)
     cfg = load_flat_config()
+    if str(cfg.get("APP_ENV") or "local").strip().lower() in {"prod", "production"}:
+        raise RuntimeError("Refusing to reset demo invoice tables while APP_ENV is production.")
     reset_mysql_tables(cfg)
     clear_mailpit()
     print("[ok] Demo state reset complete.")

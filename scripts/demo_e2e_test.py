@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Legacy Streamlit demo regression.
+
+The canonical Web UI regression now lives in frontend/tests and runs with
+Playwright against Next.js + FastAPI. Keep this script only for comparing the
+old Streamlit work-order loop during migration.
+"""
+
 import json
 import os
 import subprocess

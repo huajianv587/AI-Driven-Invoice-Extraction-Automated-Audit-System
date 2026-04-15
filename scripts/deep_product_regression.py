@@ -22,9 +22,11 @@ if str(ROOT) not in sys.path:
 from src.config import load_env, load_flat_config
 from src.main import build_service
 from src.services.ingestion_service import process_one_image
+from scripts.guard_deep_regression import validate_deep_regression_safety
 
 
-PYTHON = str(ROOT / ".venv" / "Scripts" / "python.exe")
+VENV_PYTHON = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+PYTHON = str(VENV_PYTHON if VENV_PYTHON.exists() else Path(sys.executable))
 DEFAULT_PURCHASE_NO = "PO-DEMO-001"
 
 
@@ -233,16 +235,18 @@ def process_invoice(file_name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
         close_service(svc)
 
 
-def concurrent_worker(file_name: str, queue) -> None:
+def concurrent_worker(file_name: str, queue, overrides: Dict[str, Any] | None = None) -> None:
     cfg = current_cfg()
+    if overrides:
+        cfg = with_overrides(cfg, **overrides)
     summary = process_invoice(file_name, cfg)
     queue.put(summary)
 
 
-def run_concurrent_duplicate(file_name: str) -> List[Dict[str, Any]]:
+def run_concurrent_duplicate(file_name: str, overrides: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
     ctx = get_context("spawn")
     queue = ctx.Queue()
-    processes = [ctx.Process(target=concurrent_worker, args=(file_name, queue)) for _ in range(2)]
+    processes = [ctx.Process(target=concurrent_worker, args=(file_name, queue, overrides or {})) for _ in range(2)]
     for proc in processes:
         proc.start()
 
@@ -303,7 +307,17 @@ def scenario_concurrent_reentry(cfg: Dict[str, Any]) -> Dict[str, Any]:
     reset_demo_state()
     align_demo_purchase_order_recipients(cfg)
 
-    results = run_concurrent_duplicate("invoice.jpg")
+    # Keep this scenario focused on DB idempotency. Real Dify is exercised by
+    # other scenarios; running it twice in parallel can exceed workflow quotas
+    # and make a deterministic concurrency test flaky.
+    results = run_concurrent_duplicate(
+        "invoice.jpg",
+        {
+            "DIFY_BASE_URL": "http://127.0.0.1:9/v1",
+            "dify_base_url": "http://127.0.0.1:9/v1",
+            "DIFY_RETRY_MAX": 1,
+        },
+    )
     actions = sorted(str((result.get("result") or {}).get("action")) for result in results)
     errors = [result for result in results if not (result.get("result") or {}).get("ok")]
     invoice_ids = [int((result.get("result") or {}).get("invoice_id") or 0) for result in results if (result.get("result") or {}).get("invoice_id")]
@@ -399,6 +413,7 @@ def scenario_dify_fallback(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def main() -> None:
+    validate_deep_regression_safety()
     load_env(override=True)
     cfg = load_flat_config()
 
@@ -422,6 +437,11 @@ def main() -> None:
             "scenario_count": len(scenarios),
             "scenarios": scenarios,
         }
+        report_path = os.getenv("WEB_DEEP_REGRESSION_REPORT", "").strip()
+        if report_path:
+            output = Path(report_path)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
     finally:
         if ocr_proc:

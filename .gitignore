@@ -8,10 +8,19 @@ __pycache__/
 .idea/
 logs/
 src/logs/
+artifacts/
+test-results/
 
 .streamlit/
 .pytest_cache/
 .mypy_cache/
+frontend/node_modules/
+frontend/.next/
+frontend/playwright-report/
+frontend/playwright-report-deep/
+frontend/test-results/
+frontend/tests/.auth/
+frontend/.env.local
 
 temp_*.jpg
 *.log

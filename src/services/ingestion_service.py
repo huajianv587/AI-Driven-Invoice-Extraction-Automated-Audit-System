@@ -1367,8 +1367,8 @@ class IngestionService:
             if self.event_repo:
                 try:
                     self.event_repo.add_event(invoice_id, "INGEST", "OK", payload={"source": source_file_path})
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[WARN] Failed to write INGEST audit event invoice_id=%s err=%s", invoice_id, repr(exc))
 
             return IngestResult(ok=True, action="inserted", invoice_id=invoice_id, unique_hash=unique_hash)
 
@@ -1482,8 +1482,8 @@ def run_pipeline_for_invoice_image(file_path: str, cfg: dict, svc: IngestionServ
             if cleanup_path and os.path.exists(cleanup_path):
                 try:
                     os.remove(cleanup_path)
-                except Exception:
-                    pass
+                except OSError as exc:
+                    logger.warning("[WARN] Failed to remove temporary Dify upload file %s err=%s", cleanup_path, repr(exc))
     else:
         logger.warning("[WARN] Dify disabled (missing DIFY_API_KEY or DIFY_WORKFLOW_ID). Use OCR fallback.")
         outputs_schema_v1 = None

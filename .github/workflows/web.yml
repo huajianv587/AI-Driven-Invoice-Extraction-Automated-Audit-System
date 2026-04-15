@@ -1,0 +1,145 @@
+name: Web Stack
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  schedule:
+    - cron: "21 18 * * *"
+  workflow_dispatch:
+    inputs:
+      run_deep:
+        description: "Run strict deep regression with real integrations"
+        required: false
+        default: "false"
+
+jobs:
+  pr-web-regression:
+    if: github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.run_deep == 'true')
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      APP_ENV: ci
+      PYTHONUTF8: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+      AUTH_JWT_SECRET: ci-web-stack-secret
+      AUTH_BOOTSTRAP_ADMIN_EMAIL: admin@invoice-audit.local
+      AUTH_BOOTSTRAP_ADMIN_PASSWORD: ChangeMe123!
+      ALLOW_REAL_INTEGRATION_TESTS: "0"
+      WEB_DEEP_RESET_DEMO_DB: "0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install chromium
+
+      - name: Python compile and unit tests
+        run: |
+          python -m compileall api_server.py ocr_server.py src scripts tests
+          python -m pytest tests
+
+      - name: Frontend build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Standard E2E
+        working-directory: frontend
+        run: npm run test:e2e
+
+      - name: Upload PR artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-web-artifacts
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+            artifacts/e2e-logs
+          if-no-files-found: ignore
+
+  deep-regression:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_deep == 'true')
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      APP_ENV: local
+      PYTHONUTF8: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+      AUTH_JWT_SECRET: ci-web-stack-secret
+      AUTH_BOOTSTRAP_ADMIN_EMAIL: admin@invoice-audit.local
+      AUTH_BOOTSTRAP_ADMIN_PASSWORD: ChangeMe123!
+      ALLOW_REAL_INTEGRATION_TESTS: "1"
+      WEB_DEEP_RESET_DEMO_DB: "1"
+      WEB_DEEP_CONFIRM: RESET_DEMO_DATA_AND_CALL_REAL_INTEGRATIONS
+      WEB_DEEP_EXTERNAL_PREFIX: DEEP_TEST_CI
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install chromium
+
+      - name: Deep Web regression
+        working-directory: frontend
+        run: npm run test:deep
+
+      - name: Lighthouse
+        if: always()
+        working-directory: frontend
+        run: npm run test:lighthouse
+
+      - name: Upload deep artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-web-artifacts
+          path: |
+            frontend/playwright-report-deep
+            frontend/test-results
+            artifacts/e2e-logs
+            artifacts/deep-regression
+            artifacts/lighthouse
+          if-no-files-found: ignore
