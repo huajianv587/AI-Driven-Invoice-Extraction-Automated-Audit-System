@@ -9,17 +9,17 @@ export function ActivityStrip({ items }: { items: DailyActivityPoint[] }) {
       {items.map((item) => {
         const height = `${Math.max(14, (item.total_count / maxVolume) * 92)}px`;
         return (
-          <Surface key={`${item.activity_date}-${item.day_label}`}>
+          <Surface key={`${item.activity_date}-${item.day_label}`} className="dense-surface interactive-card">
             <p className="mono-label text-brand" data-testid="activity-day-label">{item.day_label}</p>
-            <div className="mt-5 flex h-28 items-end">
-              <div className="w-full rounded-[18px] bg-[#eef3ff] p-2">
+            <div className="mt-4 flex h-24 items-end">
+              <div className="w-full border border-line bg-white/5 p-2">
                 <div
-                  className="rounded-[14px] bg-gradient-to-b from-brand to-[#5677ff]"
+                  className="bg-brand shadow-[0_0_18px_rgba(0,255,136,0.25)]"
                   style={{ height }}
                 />
               </div>
             </div>
-            <div className="mt-4 text-2xl font-semibold text-ink">{item.total_count}</div>
+            <div className="mt-3 text-xl font-semibold text-ink">{item.total_count}</div>
             <p className="mt-1 text-sm text-slate">{item.risk_count} flagged cases</p>
           </Surface>
         );

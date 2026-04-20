@@ -7,6 +7,7 @@ import { z } from "zod";
 
 import { useAuth } from "@/components/auth-provider";
 import { Surface } from "@/components/ui";
+import type { ReviewResponse } from "@/lib/types";
 
 const reviewSchema = z.object({
   handler_user: z.string().min(2, "Enter the reviewer name."),
@@ -34,21 +35,26 @@ export function ReviewForm({
   });
 
   return (
-    <Surface>
+    <Surface className="dense-surface status-processing">
       <p className="mono-label text-brand">Decision form</p>
       <h3 className="mt-3 text-2xl font-semibold tracking-tight text-ink">Reviewer note and outcome</h3>
       <form
-        className="mt-6 space-y-4"
+        className="mt-5 space-y-4"
         onSubmit={form.handleSubmit(async (values) => {
           setMessage("");
           setErrorMessage("");
           try {
-            await authFetch(`/api/invoices/${invoiceId}/review`, {
+            const idempotencyKey =
+              typeof crypto !== "undefined" && "randomUUID" in crypto
+                ? crypto.randomUUID()
+                : `review-${invoiceId}-${Date.now()}`;
+            const response = await authFetch(`/api/invoices/${invoiceId}/review`, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
               body: JSON.stringify(values)
             });
-            setMessage("Decision saved and audit trail updated.");
+            const result = (await response.json()) as ReviewResponse;
+            setMessage(result.message || (result.changed ? "Decision saved and audit trail updated." : "Decision already recorded."));
             onSuccess?.();
           } catch (error) {
             setErrorMessage(error instanceof Error ? error.message : "Unable to save this review decision.");
@@ -58,12 +64,12 @@ export function ReviewForm({
         <div className="grid gap-4 md:grid-cols-2">
           <label className="space-y-2 text-sm font-medium text-ink">
             <span>Handler</span>
-            <input className="w-full rounded-2xl border border-line bg-white px-4 py-3 outline-none" {...form.register("handler_user")} />
+            <input className="w-full px-4 py-2.5 outline-none" {...form.register("handler_user")} />
             <span className="text-xs text-rose">{form.formState.errors.handler_user?.message}</span>
           </label>
           <label className="space-y-2 text-sm font-medium text-ink">
             <span>Review result</span>
-            <select className="w-full rounded-2xl border border-line bg-white px-4 py-3 outline-none" {...form.register("review_result")}>
+            <select className="w-full px-4 py-2.5 outline-none" {...form.register("review_result")}>
               <option value="Pending">Pending</option>
               <option value="Approved">Approved</option>
               <option value="Rejected">Rejected</option>
@@ -74,12 +80,12 @@ export function ReviewForm({
 
         <label className="block space-y-2 text-sm font-medium text-ink">
           <span>Handling note</span>
-          <textarea className="min-h-44 w-full rounded-2xl border border-line bg-white px-4 py-3 outline-none" {...form.register("handling_note")} />
+          <textarea className="min-h-40 w-full px-4 py-2.5 outline-none" {...form.register("handling_note")} />
           <span className="text-xs text-rose">{form.formState.errors.handling_note?.message}</span>
         </label>
 
         <button
-          className="inline-flex items-center justify-center rounded-2xl bg-brand px-5 py-3 text-sm font-semibold text-white shadow-focus transition hover:translate-y-[-1px]"
+          className="terminal-primary"
           disabled={form.formState.isSubmitting}
           type="submit"
         >

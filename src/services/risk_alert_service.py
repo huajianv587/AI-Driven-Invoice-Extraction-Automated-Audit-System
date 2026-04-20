@@ -55,7 +55,9 @@ class RiskAlertService:
         po_no = (context or {}).get("purchase_order_no") or (context or {}).get("po_no") or "N/A"
         code = meta.get("invoice_code") or "UNKNOWN"
         number = meta.get("invoice_number") or "UNKNOWN"
-        return f"[Invoice Risk Alert] PO:{po_no} Invoice:{code}-{number}"
+        external_prefix = str((context or {}).get("external_prefix") or "").strip()
+        prefix = f"[{external_prefix}]" if external_prefix else ""
+        return f"[Invoice Risk Alert]{prefix} PO:{po_no} Invoice:{code}-{number}"
 
     def _format_amount(self, value: Any) -> str:
         try:
@@ -94,6 +96,10 @@ class RiskAlertService:
         form_link = self._build_form_link(context)
         purchase_no = context.get("purchase_order_no") or context.get("po_no") or "N/A"
         purchaser_name = context.get("purchaser_name") or "N/A"
+        external_prefix = str(context.get("external_prefix") or "").strip()
+        unique_hash = str(context.get("unique_hash") or "").strip()
+        prefix_line = f"External reference: {external_prefix}\n" if external_prefix else ""
+        unique_hash_line = f"Unique hash: {unique_hash}\n" if unique_hash else ""
         form_line = f"\nWork order form: {form_link}" if form_link else ""
 
         return (
@@ -102,6 +108,8 @@ class RiskAlertService:
             f"Purchaser: {purchaser_name}\n"
             f"Invoice ID: {context.get('invoice_id', 'N/A')}\n"
             f"Invoice file: {context.get('invoice_file_name', 'N/A')}\n\n"
+            f"{prefix_line}"
+            f"{unique_hash_line}"
             "Invoice summary:\n"
             f"- Invoice code: {meta.get('invoice_code', 'N/A')}\n"
             f"- Invoice number: {meta.get('invoice_number', 'N/A')}\n"

@@ -75,6 +75,11 @@ export function getAdminCredentials() {
   };
 }
 
+export function getRefreshCookieName() {
+  const env = loadRootEnv();
+  return env.AUTH_COOKIE_NAME || "invoice_refresh_token";
+}
+
 export function getRoleCredentials(role: "admin" | "reviewer" | "ops" | "inactive") {
   if (role === "admin") {
     return getAdminCredentials();

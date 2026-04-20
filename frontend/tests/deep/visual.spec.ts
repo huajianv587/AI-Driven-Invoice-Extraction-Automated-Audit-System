@@ -7,7 +7,7 @@ test("deep visual baseline covers public, auth, and workspace shells", async ({ 
   const { email, password } = getAdminCredentials();
   const mobile = isMobileProject(testInfo.project.name);
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /Enterprise-grade invoice operations/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Invoice evidence, risk review/i })).toBeVisible();
   await expectStableScreenshot(page, mobile ? "deep-landing-mobile.png" : "deep-landing-desktop.png");
 
   await context.clearCookies();
@@ -22,8 +22,11 @@ test("deep visual baseline covers public, auth, and workspace shells", async ({ 
   if (mobile) {
     await expectStableScreenshot(page, "deep-dashboard-mobile.png", {
       mask: [page.getByTestId("activity-day-label")],
-      maskColor: "#eef3ff"
+      maskColor: "#071009"
     });
+    await page.goto("/app/control-room");
+    await expect(page.getByRole("heading", { name: "Control Room" })).toBeVisible();
+    await expectStableScreenshot(page, "deep-control-room-mobile.png");
     return;
   }
 
@@ -31,7 +34,7 @@ test("deep visual baseline covers public, auth, and workspace shells", async ({ 
   await expect(page.getByRole("heading", { name: "Mission Control" })).toBeVisible();
   await expectStableScreenshot(page, "deep-dashboard-desktop.png", {
     mask: [page.getByTestId("activity-day-label")],
-    maskColor: "#eef3ff"
+    maskColor: "#071009"
   });
 
   await page.goto("/app/queue");
@@ -45,4 +48,8 @@ test("deep visual baseline covers public, auth, and workspace shells", async ({ 
   await page.goto("/app/ops");
   await expect(page.getByRole("heading", { name: "Operations Center" })).toBeVisible();
   await expectStableScreenshot(page, "deep-ops-desktop.png");
+
+  await page.goto("/app/control-room");
+  await expect(page.getByRole("heading", { name: "Control Room" })).toBeVisible();
+  await expectStableScreenshot(page, "deep-control-room-desktop.png");
 });

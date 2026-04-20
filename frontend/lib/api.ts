@@ -1,16 +1,25 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8009";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
 export function getApiBaseUrl() {
-  return API_BASE_URL.replace(/\/$/, "");
+  if (API_BASE_URL) {
+    return API_BASE_URL.replace(/\/$/, "");
+  }
+  if (typeof window !== "undefined") {
+    return `${window.location.origin}/api`;
+  }
+  return "http://127.0.0.1:8009";
 }
 
 export async function readError(response: Response) {
+  const headerRequestId = response.headers.get("x-request-id");
   try {
     const payload = await response.json();
     const detail = payload.detail ?? payload.message ?? "Request failed.";
-    const requestId = payload.request_id ? ` (request ${payload.request_id})` : "";
+    const requestIdValue = payload.request_id ?? headerRequestId;
+    const requestId = requestIdValue ? ` (request ${requestIdValue})` : "";
     return `${typeof detail === "string" ? detail : "Request failed."}${requestId}`;
   } catch {
-    return response.statusText || "Request failed.";
+    const requestId = headerRequestId ? ` (request ${headerRequestId})` : "";
+    return `${response.statusText || "Request failed."}${requestId}`;
   }
 }

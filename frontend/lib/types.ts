@@ -5,6 +5,7 @@ export interface AuthUser {
   email: string;
   full_name: string;
   role: UserRole;
+  is_public_demo?: boolean;
 }
 
 export interface AuthSessionResponse {
@@ -216,6 +217,106 @@ export interface FeishuSyncStatusResponse {
   retry_batch_limit: number;
 }
 
+export interface ReadinessCheck {
+  ok: boolean;
+  detail: string;
+  latest_file?: string | null;
+  applied_at?: string | null;
+}
+
+export interface ReadinessReport {
+  ok: boolean;
+  app_env: string;
+  checks: Record<string, ReadinessCheck>;
+}
+
+export interface IntakeFile {
+  name: string;
+  extension: string;
+  size_bytes: number;
+  modified_at?: string | null;
+}
+
+export type IntakeUploadStatus = "queued" | "processing" | "ingested" | "failed";
+
+export interface IntakePipelineCounts {
+  queued: number;
+  processing: number;
+  ingested: number;
+  failed: number;
+  total: number;
+}
+
+export interface IntakeUploadItem {
+  id: number;
+  original_name: string;
+  staged_name: string;
+  extension: string;
+  size_bytes: number;
+  status: IntakeUploadStatus;
+  error_message?: string | null;
+  invoice_id?: number | null;
+  created_by?: number | null;
+  created_by_email?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface IntakeSummary {
+  directory: string;
+  exists: boolean;
+  writable: boolean;
+  upload_enabled: boolean;
+  total_files: number;
+  total_bytes: number;
+  accepted_extensions: string[];
+  extension_breakdown: Record<string, number>;
+  recent_files: IntakeFile[];
+  pipeline_counts: IntakePipelineCounts;
+  recent_uploads: IntakeUploadItem[];
+}
+
+export interface IntakeUploadsResponse {
+  items: IntakeUploadItem[];
+  total_count: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AlertQueueItem {
+  invoice_id: number;
+  seller_name?: string | null;
+  purchase_order_no?: string | null;
+  risk_reason_summary: string;
+  amount_diff: number;
+  notify_personal_status?: string | null;
+  notify_leader_status?: string | null;
+  alert_at?: string | null;
+}
+
+export interface AlertSummary {
+  risk_count: number;
+  personal_sent_count: number;
+  leader_sent_count: number;
+  queued_count: number;
+  recent_items: AlertQueueItem[];
+}
+
+export interface ControlRoomSummary {
+  readiness: ReadinessReport;
+  intake: IntakeSummary;
+  alerts: AlertSummary;
+  feishu_sync: FeishuSyncStatusResponse;
+  mailpit_url?: string | null;
+}
+
+export interface UploadInvoiceResponse {
+  ok: boolean;
+  message: string;
+  upload: IntakeUploadItem;
+  intake: IntakeSummary;
+}
+
 export interface FeishuFailureItem {
   invoice_id: number;
   seller_name?: string | null;
@@ -229,10 +330,20 @@ export interface FeishuFailureItem {
 export interface FeishuReplayResult {
   ok_count: number;
   fail_count: number;
+  run_id?: string | null;
+  latency_ms?: number | null;
   details: Array<{
     invoice_id: number;
     ok: boolean;
     record_id?: string | null;
     error?: unknown;
   }>;
+}
+
+export interface ReviewResponse {
+  ok: boolean;
+  invoice_id: number;
+  invoice_status: string;
+  changed: boolean;
+  message?: string | null;
 }

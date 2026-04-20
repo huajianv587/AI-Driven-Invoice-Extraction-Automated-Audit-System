@@ -81,8 +81,8 @@ if errorlevel 1 (
   echo [api] FastAPI API is already running.
 )
 
-echo [api] Waiting for FastAPI health check...
-.\.venv\Scripts\python.exe scripts\wait_for_http.py http://127.0.0.1:%API_PORT%/api/health 120 || exit /b 1
+echo [api] Waiting for FastAPI readiness check...
+.\.venv\Scripts\python.exe scripts\wait_for_http.py http://127.0.0.1:%API_PORT%/api/readiness 120 || exit /b 1
 
 .\.venv\Scripts\python.exe scripts\wait_for_http.py http://127.0.0.1:%FRONTEND_PORT%/ 3 >nul 2>&1
 if errorlevel 1 (

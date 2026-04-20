@@ -16,6 +16,8 @@ import type { AuthSessionResponse, AuthUser } from "@/lib/types";
 type AuthContextValue = {
   user: AuthUser | null;
   ready: boolean;
+  publicDemoEnabled: boolean;
+  isPublicDemo: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshSession: () => Promise<string | null>;
@@ -23,6 +25,18 @@ type AuthContextValue = {
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+const appEnv = (process.env.NEXT_PUBLIC_APP_ENV ?? "local").toLowerCase();
+const publicDemoEnabled =
+  (process.env.NEXT_PUBLIC_AUTH_PUBLIC_READONLY_DEMO ?? (appEnv === "production" ? "false" : "true")).toLowerCase() === "true" &&
+  appEnv !== "production";
+
+const publicDemoUser: AuthUser = {
+  id: 0,
+  email: "public-demo@invoice-audit.local",
+  full_name: "Public Demo",
+  role: "ops",
+  is_public_demo: true
+};
 
 async function parseSessionResponse(response: Response) {
   if (!response.ok) {
@@ -43,7 +57,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
         cache: "no-store"
       });
       if (!response.ok) {
-        setUser(null);
+        setUser(publicDemoEnabled ? publicDemoUser : null);
         setAccessToken(null);
         return null;
       }
@@ -102,6 +116,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
         token = await refreshSession();
       }
 
+      const method = String(init.method || "GET").toUpperCase();
+      if (!token && publicDemoEnabled && method === "GET") {
+        const response = await execute(null);
+        if (!response.ok) {
+          throw new Error(await readError(response));
+        }
+        return response;
+      }
+
       let response = await execute(token);
       if (response.status === 401) {
         token = await refreshSession();
@@ -120,6 +143,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
     () => ({
       user,
       ready,
+      publicDemoEnabled,
+      isPublicDemo: Boolean(user?.is_public_demo),
       login,
       logout,
       refreshSession,

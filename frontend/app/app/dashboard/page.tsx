@@ -33,7 +33,7 @@ export default function DashboardPage() {
   return (
     <AppShell
       title="Mission Control"
-      subtitle="Track risk posture, queue pressure, cloud sync integrity, and connector readiness from one flagship control surface."
+      subtitle="Track risk posture, queue pressure, intake velocity, and connector health from one tighter control surface."
     >
       <div className="grid gap-4 md:grid-cols-4">
         <StatCard label="Invoices" value={String(summary?.totals.total_count ?? 0)} note="Total records in the workspace." />
@@ -57,7 +57,7 @@ export default function DashboardPage() {
         />
       </div>
 
-      <section className="space-y-4">
+      <section className="space-y-3">
         <SectionHeader
           kicker="Seven-day signal"
           title="Operational activity"
@@ -67,7 +67,7 @@ export default function DashboardPage() {
       </section>
 
       <section className="grid gap-4 md:grid-cols-[1.1fr_0.9fr]">
-        <Surface>
+        <Surface className="stagger-in dense-surface">
           <SectionHeader
             kicker="Priority risk"
             title="Top review candidates"
@@ -77,15 +77,15 @@ export default function DashboardPage() {
           <div className="mt-6 space-y-3">
             {summary?.top_risk.length ? (
               summary.top_risk.map((item) => (
-                <div key={item.id} className="rounded-[22px] border border-line bg-[#f8fbff] p-4">
+                <div key={item.id} className="terminal-row dense-row">
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <div className="text-lg font-semibold text-ink">{item.seller_name || "Unknown seller"}</div>
-                      <p className="mt-2 text-sm text-slate">{item.risk_reason_summary}</p>
+                      <p className="mt-1.5 text-sm text-slate">{item.risk_reason_summary}</p>
                     </div>
                     <div className="text-right">
                       <div className="text-lg font-semibold text-rose">{formatMoney(item.amount_diff)}</div>
-                      <div className="mt-2 text-xs uppercase tracking-[0.12em] text-slate">#{item.id}</div>
+                      <div className="mt-1.5 text-xs uppercase tracking-[0.12em] text-slate">#{item.id}</div>
                     </div>
                   </div>
                 </div>
@@ -104,20 +104,26 @@ export default function DashboardPage() {
             copy={`Browse ${queue?.total_count ?? 0} matched invoices with search, status filters, and direct review routes.`}
           />
           <LinkCard
+            href="/app/control-room"
+            kicker="Intake lane"
+            title="Control Room"
+            copy="Stage incoming invoices, track queued versus ingested uploads, and confirm readiness before a replay or review handoff."
+          />
+          <LinkCard
             href="/app/ops"
             kicker="Recovery"
             title="Operations Center"
             copy={`Connector mesh ${summary?.connectors.ready_count ?? 0}/${summary?.connectors.total_count ?? 0} ready with replay controls nearby.`}
           />
-          <Surface>
+          <Surface className="dense-surface">
             <p className="mono-label text-brand">Connector posture</p>
-            <div className="mt-4 rounded-[20px] border border-line bg-[#f8fbff] p-4">
+            <div className="terminal-row dense-row mt-3">
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <div className="text-base font-semibold text-ink">
                     {summary?.connectors.ready_count ?? 0}/{summary?.connectors.total_count ?? 4} ready
                   </div>
-                  <p className="mt-2 text-sm leading-6 text-slate">
+                  <p className="mt-1.5 text-sm leading-6 text-slate">
                     Dashboard uses the latest cached connector snapshot so slow external checks never block mission control.
                   </p>
                 </div>

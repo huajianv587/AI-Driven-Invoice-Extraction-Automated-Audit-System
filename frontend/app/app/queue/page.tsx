@@ -41,32 +41,32 @@ export default function QueuePage() {
       title="Review Queue"
       subtitle="Search, narrow, and prioritize the working slice without losing the premium app shell or deep links into case detail."
     >
-      <Surface>
+      <Surface className="stagger-in dense-surface">
         <SectionHeader
           kicker="Controls"
           title="Search, filter, and order"
           copy="Keep the queue precise enough for execution and broad enough for operational awareness."
         />
-        <div className="mt-6 grid gap-4 md:grid-cols-[1.45fr_0.75fr_0.75fr_0.85fr]">
+        <div className="mt-4 grid gap-3 md:grid-cols-[1.45fr_0.75fr_0.75fr_0.85fr]">
           <input
-            className="rounded-2xl border border-line bg-white px-4 py-3 outline-none"
+            className="px-4 py-2.5 outline-none"
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Seller, buyer, invoice, or PO"
             value={search}
           />
-          <select className="rounded-2xl border border-line bg-white px-4 py-3 outline-none" onChange={(event) => setStatus(event.target.value)} value={status}>
+          <select className="px-4 py-2.5 outline-none" onChange={(event) => setStatus(event.target.value)} value={status}>
             <option>All</option>
             <option>Pending</option>
             <option>Approved</option>
             <option>Rejected</option>
             <option>NeedsReview</option>
           </select>
-          <select className="rounded-2xl border border-line bg-white px-4 py-3 outline-none" onChange={(event) => setSort(event.target.value)} value={sort}>
+          <select className="px-4 py-2.5 outline-none" onChange={(event) => setSort(event.target.value)} value={sort}>
             <option value="newest">Newest first</option>
             <option value="risk">Risk first</option>
             <option value="largest_delta">Largest delta</option>
           </select>
-          <label className="flex items-center justify-center gap-3 rounded-2xl border border-line bg-[#f8fbff] px-4 py-3 text-sm font-medium text-ink">
+          <label className="flex items-center justify-center gap-3 rounded-[8px] border border-line bg-white/5 px-4 py-2.5 text-sm font-medium text-ink">
             <input checked={riskOnly} onChange={(event) => setRiskOnly(event.target.checked)} type="checkbox" />
             Risk only
           </label>

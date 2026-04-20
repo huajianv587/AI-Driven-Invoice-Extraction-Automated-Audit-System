@@ -151,8 +151,10 @@ def main() -> None:
     orchestrator_port = int(os.getenv("PLAYWRIGHT_STACK_PORT", "3410"))
     stack_mode = os.getenv("WEB_E2E_MODE", "standard").strip().lower() or "standard"
     deep_mode = stack_mode == "deep"
+    required_mode = stack_mode == "required"
     test_run_id = os.getenv("WEB_DEEP_TEST_RUN_ID", "").strip() or f"deep-{uuid.uuid4().hex[:10]}"
     api_health = f"http://127.0.0.1:{api_port}/api/health"
+    api_readiness = f"http://127.0.0.1:{api_port}/api/readiness"
     frontend_url = f"http://127.0.0.1:{frontend_port}/"
     ocr_docs = f"{str(cfg['OCR_BASE_URL']).rstrip('/')}/docs"
 
@@ -160,26 +162,41 @@ def main() -> None:
     env["PYTHONUTF8"] = "1"
     env["NEXT_TELEMETRY_DISABLED"] = "1"
     env["FRONTEND_PUBLIC_HOST"] = "localhost"
-    if deep_mode:
+    if deep_mode or required_mode:
         for key in ("APP_ENV", "ALLOW_REAL_INTEGRATION_TESTS", "WEB_DEEP_RESET_DEMO_DB", "WEB_DEEP_CONFIRM"):
             if key in explicit_env:
                 env[key] = explicit_env[key]
             else:
                 env.pop(key, None)
+        env["WEB_DEEP_EXTERNAL_PREFIX"] = os.getenv(
+            "WEB_DEEP_EXTERNAL_PREFIX",
+            "DEEP_TEST" if deep_mode else "REQUIRED_TEST",
+        )
+    if deep_mode:
         env["WEB_DEEP_TEST_RUN_ID"] = test_run_id
-        env["WEB_DEEP_EXTERNAL_PREFIX"] = os.getenv("WEB_DEEP_EXTERNAL_PREFIX", "DEEP_TEST")
         env["WEB_DEEP_REGRESSION_REPORT"] = str(ROOT / "artifacts" / "deep-regression" / "latest.json")
+    if required_mode:
+        env.setdefault("DIFY_REQUIRED", "True")
+        env.setdefault("FEISHU_SYNC_REQUIRED", "True")
+        env.setdefault("FEISHU_SYNC_MODE", "inline")
+        env.setdefault("EMAIL_ALERT_REQUIRED", "True")
+        env["REQUIRED_MODE_REPORT_PATH"] = str(ROOT / "artifacts" / "required-mode" / "latest.json")
 
     try:
-        if deep_mode:
+        if deep_mode or required_mode:
             run([python, "scripts/guard_deep_regression.py"], env=env)
         start_docker(python)
         run([python, "scripts/apply_schema.py"], env=env)
         if deep_mode:
             run([python, "scripts/deep_product_regression.py"], env=env)
+        if required_mode:
+            run([python, "scripts/required_mode_smoke.py"], env=env)
         run([python, "scripts/reset_demo_state.py"], env=env)
         run([python, "scripts/seed_web_demo_data.py"], env=env)
         run([python, "scripts/write_frontend_env.py"], env=env)
+
+        # Let frontend/.env.local control public runtime values during the build.
+        env.pop("NEXT_PUBLIC_API_BASE_URL", None)
 
         if not (FRONTEND / "node_modules").exists():
             run([npm, "install"], cwd=FRONTEND, env=env)
@@ -191,7 +208,7 @@ def main() -> None:
 
         if not check_url(api_health):
             start_process("api", [python, "api_server.py"], cwd=ROOT, env=env)
-        wait_url(api_health, 120, "FastAPI")
+        wait_url(api_readiness, 120, "FastAPI readiness")
 
         if not check_url(frontend_url):
             start_process(
@@ -206,11 +223,13 @@ def main() -> None:
             {
                 "ok": True,
                 "api": api_health,
+                "api_readiness": api_readiness,
                 "frontend": frontend_url,
                 "ocr": ocr_docs,
                 "mode": "production",
                 "stack_mode": stack_mode,
                 "test_run_id": test_run_id if deep_mode else None,
+                "required_report": env.get("REQUIRED_MODE_REPORT_PATH") if required_mode else None,
             }
         )
         serve_health(orchestrator_port)

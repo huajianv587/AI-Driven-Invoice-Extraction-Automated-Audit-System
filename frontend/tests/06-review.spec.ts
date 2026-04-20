@@ -4,15 +4,15 @@ import { getPorts } from "./helpers/env";
 import { cookieHeader, expectStableScreenshot, invoiceIds, isMobileProject } from "./helpers/ui";
 
 test("review desk submits a decision and exposes DB-backed audit state", async ({ context, page }, testInfo) => {
-  test.skip(isMobileProject(testInfo.project.name), "Review visual baseline is desktop-only for v1.");
-
   await page.goto(`/app/review/${invoiceIds.reviewCandidate}`);
   await expect(page.getByRole("heading", { name: `Review Desk #${invoiceIds.reviewCandidate}` })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Northstar Calibration" })).toBeVisible();
-  await expectStableScreenshot(page, "review-desktop.png");
+  await expectStableScreenshot(page, isMobileProject(testInfo.project.name) ? "review-mobile.png" : "review-desktop.png");
 
-  await page.getByLabel("Review result").selectOption("Approved");
-  await page.getByLabel("Handling note").fill("Approved after calibration overage was matched to the amended purchase order.");
+  await page.locator('select[name="review_result"]:visible').selectOption("Approved");
+  await page
+    .locator('textarea[name="handling_note"]:visible')
+    .fill("Approved after calibration overage was matched to the amended purchase order.");
   await page.getByRole("button", { name: /Submit review decision/i }).click();
   await expect(page.getByText("Decision saved and audit trail updated.")).toBeVisible();
 

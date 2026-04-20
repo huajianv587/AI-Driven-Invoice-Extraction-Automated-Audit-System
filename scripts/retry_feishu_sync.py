@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 from src.config import load_env, load_flat_config
 from src.db.mysql_client import MySQLClient
 from src.jobs.feishu_sync_job import sync_invoices_to_feishu
+from src.runtime_preflight import ensure_runtime_preflight
 
 
 def build_db(cfg):
@@ -40,6 +41,7 @@ def main() -> None:
     args = parse_args()
     load_env(override=True)
     cfg = load_flat_config()
+    ensure_runtime_preflight(cfg, context="Feishu sync replay")
     db = build_db(cfg)
     try:
         ok, fail, details = sync_invoices_to_feishu(

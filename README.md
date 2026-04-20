@@ -40,6 +40,15 @@ AUTH_BOOTSTRAP_ADMIN_EMAIL=admin@invoice-audit.local
 AUTH_BOOTSTRAP_ADMIN_PASSWORD=ChangeMe123!
 ```
 
+Recommended day-to-day one-click startup without clearing invoice data:
+
+```bat
+start_total.cmd
+```
+
+`start_total.cmd` starts the complete local Web stack, opens the Web app and Mailpit, and prints the resolved ports after startup.
+Lines starting with `[wait]` are normal readiness checks while Docker, OCR, API, and Next.js come online.
+
 Day-to-day local development without clearing invoice data:
 
 ```bat
@@ -53,7 +62,7 @@ start_web_stack.bat local
 start_web_stack.bat demo
 ```
 
-The default `start.cmd` calls `start_demo.bat` and opens the Web stack.
+The default `start.cmd` delegates to `start_total.cmd`.
 
 ## Web Regression
 
@@ -124,9 +133,39 @@ Deterministic Web demo data is seeded by:
 The stack keeps the existing integration model:
 
 - OCR: local `ocr_server.py` on `OCR_BASE_URL`.
-- Dify: optional extraction workflow when `DIFY_API_KEY` and `DIFY_WORKFLOW_ID` are set.
-- Feishu: optional Bitable sync when Feishu credentials are set.
+- Dify: optional extraction workflow when `DIFY_API_KEY` and `DIFY_WORKFLOW_ID` are set; set `DIFY_REQUIRED=True` to block fallback on missing/failed Dify extraction.
+- Feishu: optional Bitable sync when Feishu credentials are set; set `FEISHU_SYNC_REQUIRED=True` only with `FEISHU_SYNC_MODE=inline` when sync must fail loud instead of degrading.
 - Mailpit: local email preview on `http://127.0.0.1:8025`.
+- SMTP alerts: set `EMAIL_ALERT_REQUIRED=True` when risky invoices must fail loud if alert delivery does not complete.
+
+## Required Smoke
+
+Use the dedicated required-mode smoke when Dify, Feishu, and SMTP must all succeed with real sandbox credentials:
+
+```bat
+set APP_ENV=local
+set ALLOW_REAL_INTEGRATION_TESTS=1
+set WEB_DEEP_RESET_DEMO_DB=1
+set WEB_DEEP_CONFIRM=RESET_DEMO_DATA_AND_CALL_REAL_INTEGRATIONS
+set DIFY_REQUIRED=True
+set FEISHU_SYNC_REQUIRED=True
+set FEISHU_SYNC_MODE=inline
+set EMAIL_ALERT_REQUIRED=True
+.\.venv\Scripts\python.exe scripts\required_mode_smoke.py
+```
+
+For the browser-backed wrapper:
+
+```bat
+cd frontend
+set APP_ENV=local
+set ALLOW_REAL_INTEGRATION_TESTS=1
+set WEB_DEEP_RESET_DEMO_DB=1
+set WEB_DEEP_CONFIRM=RESET_DEMO_DATA_AND_CALL_REAL_INTEGRATIONS
+npm run test:required
+```
+
+`scripts/required_mode_smoke.py` expects real SMTP + IMAP sandbox credentials in `TEST_IMAP_*` so it can prove the alert arrived in the mailbox, not just that the app reported send success.
 
 ## Production Notes
 
@@ -136,14 +175,17 @@ Set these before exposing the app beyond localhost:
 - `AUTH_JWT_SECRET` to a long random secret
 - `AUTH_JWT_OLD_SECRETS` only during key rotation
 - `AUTH_COOKIE_SECURE=True` behind HTTPS
+- `AUTH_COOKIE_DOMAIN` when frontend/API are split across subdomains
 - `FRONTEND_ORIGIN` to the exact public frontend origin
+- `NEXT_PUBLIC_API_BASE_URL` only when the browser must call a different public API origin
+- `DIFY_REQUIRED`, `FEISHU_SYNC_REQUIRED`, and `EMAIL_ALERT_REQUIRED` only for integrations that are truly mandatory in production
 - `CONNECTOR_HEALTH_TTL_SEC` to control Ops connector cache freshness
 
 Login attempts, RBAC denials, session revocations, review submissions, and Ops retries are written to security/audit tables. API responses include `X-Request-ID` and error payloads include `request_id` for log correlation.
 
 ## Legacy Streamlit
 
-Streamlit is no longer the default UI. Keep it only for comparison or debugging during migration:
+Streamlit is no longer the default UI. Treat it as a legacy, read-only comparison/debug surface during migration:
 
 ```bat
 start_ui.bat

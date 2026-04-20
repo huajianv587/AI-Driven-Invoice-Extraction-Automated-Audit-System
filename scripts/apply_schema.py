@@ -1,3 +1,4 @@
+import hashlib
 import os
 import sys
 import time
@@ -17,6 +18,20 @@ ADD_COLUMNS = {
         ("device_label", "VARCHAR(128) NULL"),
         ("last_seen_at", "DATETIME NULL"),
         ("revoked_reason", "VARCHAR(64) NULL"),
+    ],
+    "invoice_review_tasks": [
+        ("idempotency_key", "VARCHAR(128) NULL"),
+        ("request_id", "VARCHAR(64) NULL"),
+    ],
+}
+
+ADD_INDEXES = {
+    "invoice_review_tasks": [
+        (
+            "uq_invoice_review_tasks_idempotency",
+            "UNIQUE KEY `uq_invoice_review_tasks_idempotency` (`idempotency_key`)",
+        ),
+        ("idx_invoice_review_tasks_request_id", "KEY `idx_invoice_review_tasks_request_id` (`request_id`)"),
     ],
 }
 
@@ -95,11 +110,46 @@ def split_sql(sql_text: str):
     return [statement.strip() for statement in sql_text.split(";") if statement.strip()]
 
 
+def ensure_schema_tracking_table(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_schema_migrations (
+              file_name VARCHAR(255) NOT NULL,
+              checksum CHAR(64) NOT NULL,
+              applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              PRIMARY KEY (file_name),
+              KEY idx_app_schema_migrations_updated (updated_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+    conn.commit()
+
+
+def record_schema_file(conn, path: Path, sql_text: str):
+    checksum = hashlib.sha256(sql_text.encode("utf-8")).hexdigest()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO app_schema_migrations(file_name, checksum, applied_at)
+            VALUES(%s, %s, NOW())
+            ON DUPLICATE KEY UPDATE
+              checksum=VALUES(checksum),
+              applied_at=VALUES(applied_at),
+              updated_at=NOW()
+            """,
+            (path.name, checksum),
+        )
+    conn.commit()
+
+
 def apply_schema(conn):
     files = sorted(SQL_DIR.glob("*.sql"))
     if not files:
         raise RuntimeError(f"No SQL files found in {SQL_DIR}")
 
+    ensure_schema_tracking_table(conn)
     for path in files:
         sql_text = path.read_text(encoding="utf-8").strip()
         if not sql_text:
@@ -111,6 +161,7 @@ def apply_schema(conn):
             for statement in split_sql(sql_text):
                 cur.execute(statement)
         conn.commit()
+        record_schema_file(conn, path, sql_text)
 
 
 def column_exists(conn, table_name: str, column_name: str) -> bool:
@@ -127,6 +178,22 @@ def column_exists(conn, table_name: str, column_name: str) -> bool:
         )
         row = cur.fetchone() or {}
     return int(row.get("column_count") or 0) > 0
+
+
+def index_exists(conn, table_name: str, index_name: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS index_count
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = %s
+              AND index_name = %s
+            """,
+            (table_name, index_name),
+        )
+        row = cur.fetchone() or {}
+    return int(row.get("index_count") or 0) > 0
 
 
 def ensure_additive_columns(conn):
@@ -152,6 +219,29 @@ def ensure_additive_columns(conn):
     conn.commit()
 
 
+def ensure_additive_indexes(conn):
+    with conn.cursor() as cur:
+        for table_name, indexes in ADD_INDEXES.items():
+            cur.execute(
+                """
+                SELECT COUNT(*) AS table_count
+                FROM information_schema.tables
+                WHERE table_schema = DATABASE()
+                  AND table_name = %s
+                """,
+                (table_name,),
+            )
+            if int((cur.fetchone() or {}).get("table_count") or 0) == 0:
+                continue
+
+            for index_name, definition in indexes:
+                if index_exists(conn, table_name, index_name):
+                    continue
+                print(f"[alter] {table_name}.{index_name}")
+                cur.execute(f"ALTER TABLE `{table_name}` ADD {definition}")
+    conn.commit()
+
+
 def main():
     if not SQL_DIR.exists():
         raise RuntimeError(f"SQL directory not found: {SQL_DIR}")
@@ -161,6 +251,7 @@ def main():
     try:
         apply_schema(conn)
         ensure_additive_columns(conn)
+        ensure_additive_indexes(conn)
     finally:
         conn.close()
     print("[ok] Schema applied successfully.")

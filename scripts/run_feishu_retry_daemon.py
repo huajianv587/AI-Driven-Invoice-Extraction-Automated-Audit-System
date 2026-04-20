@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 from src.config import load_env, load_flat_config
 from src.db.mysql_client import MySQLClient
 from src.jobs.feishu_sync_job import sync_invoices_to_feishu
+from src.runtime_preflight import ensure_runtime_preflight
 
 
 LOCK_PATH = Path(tempfile.gettempdir()) / "invoice_audit_feishu_retry_worker.lock"
@@ -109,6 +110,7 @@ def main() -> int:
     args = parse_args()
     load_env(override=True)
     cfg = load_flat_config()
+    ensure_runtime_preflight(cfg, context="Feishu retry worker")
 
     enabled = bool(cfg.get("FEISHU_RETRY_WORKER_ENABLED"))
     mode = str(args.mode or cfg.get("FEISHU_RETRY_MODE") or "failed").strip().lower()

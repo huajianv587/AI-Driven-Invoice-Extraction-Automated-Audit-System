@@ -33,6 +33,42 @@ class FeishuBitableClient:
             return "*" * len(text)
         return f"{text[:keep]}...{text[-keep:]}"
 
+    @staticmethod
+    def _preview_text(value: Optional[str], limit: int = 240) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        compact = " ".join(text.split())
+        if len(compact) <= limit:
+            return compact
+        return compact[: max(limit - 3, 1)] + "..."
+
+    def _json_or_raise(self, response: requests.Response, *, action: str) -> Dict[str, Any]:
+        try:
+            return response.json()
+        except Exception as exc:
+            content_type = self._preview_text(response.headers.get("content-type"), limit=96) or "unknown"
+            body_preview = self._preview_text(response.text) or "<empty>"
+            raise RuntimeError(
+                f"Feishu {action} returned HTTP {response.status_code} "
+                f"with non-JSON body (content-type={content_type}): {body_preview}"
+            ) from exc
+
+    def _json_or_error(self, response: requests.Response, *, action: str) -> Dict[str, Any]:
+        try:
+            data = response.json()
+        except Exception:
+            data = {
+                "error": f"Feishu {action} returned HTTP {response.status_code} with non-JSON body",
+                "http_status": response.status_code,
+                "content_type": response.headers.get("content-type"),
+                "body_preview": self._preview_text(response.text) or "<empty>",
+            }
+        if isinstance(data, dict):
+            data.setdefault("http_status", response.status_code)
+            data.setdefault("content_type", response.headers.get("content-type"))
+        return data
+
     def get_tenant_token(self) -> Optional[str]:
         url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
         resp = requests.post(
@@ -40,17 +76,33 @@ class FeishuBitableClient:
             json={"app_id": self.app_id, "app_secret": self.app_secret},
             timeout=20,
         )
-        data = resp.json()
+        data = self._json_or_raise(resp, action="tenant token")
         print(
             "[Feishu] tenant_token resp:",
             {
+                "http_status": resp.status_code,
                 "code": data.get("code"),
                 "msg": data.get("msg"),
                 "expire": data.get("expire"),
                 "tenant_access_token": self._mask_secret(data.get("tenant_access_token")),
             },
         )
-        return data.get("tenant_access_token")
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"Feishu tenant token returned HTTP {resp.status_code}: "
+                f"code={data.get('code')} msg={self._preview_text(data.get('msg')) or '<empty>'}"
+            )
+        if data.get("code") != 0:
+            raise RuntimeError(
+                f"Feishu tenant token rejected credentials or app access: "
+                f"code={data.get('code')} msg={self._preview_text(data.get('msg')) or '<empty>'}"
+            )
+        token = str(data.get("tenant_access_token") or "").strip()
+        if not token:
+            raise RuntimeError(
+                "Feishu tenant token response succeeded but tenant_access_token was empty."
+            )
+        return token
 
     def _get_fields_meta(self, token: str) -> Dict[str, int]:
         """
@@ -64,9 +116,17 @@ class FeishuBitableClient:
         url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/fields"
         headers = {"Authorization": f"Bearer {token}"}
         r = requests.get(url, headers=headers, timeout=20)
-        meta = r.json()
+        meta = self._json_or_raise(r, action="field metadata")
+        if r.status_code != 200:
+            raise RuntimeError(
+                f"Feishu field metadata returned HTTP {r.status_code}: "
+                f"code={meta.get('code')} msg={self._preview_text(meta.get('msg')) or '<empty>'}"
+            )
         if meta.get("code") != 0:
-            raise RuntimeError(f"fetch_fields_failed: {meta}")
+            raise RuntimeError(
+                f"Feishu field metadata rejected app/table access: "
+                f"code={meta.get('code')} msg={self._preview_text(meta.get('msg')) or '<empty>'}"
+            )
         mp: Dict[str, int] = {}
         for it in meta["data"]["items"]:
             mp[it["field_name"]] = it.get("type")
@@ -210,13 +270,22 @@ class FeishuBitableClient:
         payload = {"fields": normalized}
 
         resp = requests.post(url, headers=headers, json=payload, timeout=20)
-        try:
-            data = resp.json()
-        except Exception:
-            data = {"raw_text": resp.text}
+        data = self._json_or_error(resp, action="add_record")
 
         print("[Feishu] add_record status:", resp.status_code)
         print("[Feishu] add_record resp:", data)
 
         ok = (resp.status_code in (200, 201)) and (data.get("code") == 0)
+        return ok, data
+
+    def get_record(self, token: str, record_id: str) -> Tuple[bool, Any]:
+        url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/records/{record_id}"
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = requests.get(url, headers=headers, timeout=20)
+        data = self._json_or_error(resp, action="get_record")
+
+        print("[Feishu] get_record status:", resp.status_code)
+        print("[Feishu] get_record resp:", data)
+
+        ok = resp.status_code == 200 and data.get("code") == 0
         return ok, data

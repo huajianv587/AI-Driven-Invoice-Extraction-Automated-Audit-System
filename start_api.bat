@@ -16,6 +16,9 @@ if not exist .venv\Scripts\python.exe (
 echo [pip] Installing Python dependencies...
 .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check -r requirements.txt || exit /b 1
 
+echo [env] Validating .env ...
+.\.venv\Scripts\python.exe scripts\check_env.py || exit /b 1
+
 echo [db] Applying schema...
 .\.venv\Scripts\python.exe scripts\apply_schema.py || exit /b 1
 

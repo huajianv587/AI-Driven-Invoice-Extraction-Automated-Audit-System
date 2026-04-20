@@ -13,7 +13,8 @@
     "test:lighthouse": "node scripts/run-lighthouse.mjs",
     "test:deep": "playwright test --config=playwright.deep.config.ts",
     "test:deep:headed": "playwright test --config=playwright.deep.config.ts --headed",
-    "test:deep:update": "playwright test --config=playwright.deep.config.ts --update-snapshots"
+    "test:deep:update": "playwright test --config=playwright.deep.config.ts --update-snapshots",
+    "test:required": "playwright test --config=playwright.required.config.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

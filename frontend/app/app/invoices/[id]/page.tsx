@@ -57,17 +57,17 @@ export default function InvoiceDetailPage() {
             <Surface>
               <SectionHeader kicker="Case facts" title="Document summary" copy={detail.invoice.risk_reason_summary || "Review invoice and PO alignment."} />
               <div className="mt-6 grid gap-3 md:grid-cols-2">
-                <div className="rounded-[20px] border border-line bg-[#f8fbff] p-4"><div className="text-sm text-slate">Seller</div><div className="mt-2 font-semibold text-ink">{detail.invoice.seller_name || "-"}</div></div>
-                <div className="rounded-[20px] border border-line bg-[#f8fbff] p-4"><div className="text-sm text-slate">Buyer</div><div className="mt-2 font-semibold text-ink">{detail.invoice.buyer_name || "-"}</div></div>
-                <div className="rounded-[20px] border border-line bg-[#f8fbff] p-4"><div className="text-sm text-slate">Invoice date</div><div className="mt-2 font-semibold text-ink">{formatDate(detail.invoice.invoice_date)}</div></div>
-                <div className="rounded-[20px] border border-line bg-[#f8fbff] p-4"><div className="text-sm text-slate">PO number</div><div className="mt-2 font-semibold text-ink">{detail.invoice.purchase_order_no || "-"}</div></div>
+                <div className="terminal-row"><div className="text-sm text-slate">Seller</div><div className="mt-2 font-semibold text-ink">{detail.invoice.seller_name || "-"}</div></div>
+                <div className="terminal-row"><div className="text-sm text-slate">Buyer</div><div className="mt-2 font-semibold text-ink">{detail.invoice.buyer_name || "-"}</div></div>
+                <div className="terminal-row"><div className="text-sm text-slate">Invoice date</div><div className="mt-2 font-semibold text-ink">{formatDate(detail.invoice.invoice_date)}</div></div>
+                <div className="terminal-row"><div className="text-sm text-slate">PO number</div><div className="mt-2 font-semibold text-ink">{detail.invoice.purchase_order_no || "-"}</div></div>
               </div>
-              <div className="mt-6 rounded-[22px] border border-line bg-white p-4">
+              <div className="terminal-row mt-6">
                 <div className="text-sm font-semibold text-ink">Evidence preview</div>
                 <p className="mt-2 text-sm leading-6 text-slate">
                   Source file: {detail.invoice.source_file_path || "No source file path captured."}
                 </p>
-                <pre className="mt-3 max-h-48 overflow-auto rounded-2xl bg-[#0f172a] p-4 text-xs leading-5 text-white/85">
+                <pre className="mt-3 max-h-48 overflow-auto border border-line bg-black/30 p-4 text-xs leading-5 text-white/85">
                   {jsonPreview(detail.invoice.raw_ocr_json)}
                 </pre>
               </div>
@@ -78,16 +78,16 @@ export default function InvoiceDetailPage() {
 
             <Surface>
               <SectionHeader kicker="Cloud mirror" title="Sync posture" copy="See whether the document already reached Feishu and whether replay is required." />
-              <div className="mt-6 rounded-[20px] border border-line bg-[#f8fbff] p-4">
+              <div className="terminal-row mt-6">
                 <Badge tone={detail.sync.sync_tone as "neutral" | "ok" | "warn" | "danger"}>{detail.sync.sync_label}</Badge>
                 <p className="mt-4 text-sm text-slate">{detail.sync.sync_error || "No sync error is currently recorded for this invoice."}</p>
               </div>
-              <div className="mt-6 rounded-[20px] border border-line bg-[#f8fbff] p-4">
+              <div className="terminal-row mt-6">
                 <div className="text-sm text-slate">Purchase order owner</div>
                 <div className="mt-2 font-semibold text-ink">{detail.purchase_order?.purchaser_name || "-"}</div>
                 <div className="mt-3 text-sm text-slate">{detail.purchase_order?.purchaser_email || "No purchaser email on file."}</div>
               </div>
-              <div className="mt-6 rounded-[20px] border border-line bg-[#f8fbff] p-4">
+              <div className="terminal-row mt-6">
                 <div className="text-sm text-slate">Invoice vs PO difference</div>
                 <div className={Math.abs(detail.invoice.amount_diff) > 0 ? "mt-2 text-2xl font-semibold text-rose" : "mt-2 text-2xl font-semibold text-mint"}>
                   {formatMoney(detail.invoice.amount_diff)}
@@ -104,7 +104,7 @@ export default function InvoiceDetailPage() {
               <SectionHeader kicker="Line items" title="Extracted invoice rows" copy="Review parsed units, quantities, and tax amounts before sign-off." />
               <div className="mt-6 space-y-3">
                 {detail.items.map((item, index) => (
-                  <div key={`${item.id}-${index}`} className="rounded-[20px] border border-line bg-[#f8fbff] p-4">
+                  <div key={`${item.id}-${index}`} className="terminal-row">
                     <div className="font-semibold text-ink">{item.item_name || `Line ${index + 1}`}</div>
                     <p className="mt-2 text-sm text-slate">
                       Qty {item.item_quantity ?? "-"} | Unit {item.item_unit || "-"} | Amount {formatMoney(item.item_amount ?? 0)}
@@ -118,7 +118,7 @@ export default function InvoiceDetailPage() {
               <SectionHeader kicker="Audit trail" title="Events and manual decisions" copy="System events and reviewer actions remain visible for downstream traceability." />
               <div className="mt-6 space-y-3">
                 {detail.state_transitions.map((transition) => (
-                  <div key={`transition-${transition.id}`} className="rounded-[20px] border border-line bg-[#f8fbff] p-4">
+                  <div key={`transition-${transition.id}`} className="terminal-row">
                     <div className="flex items-center justify-between gap-3">
                       <div className="font-semibold text-ink">{transition.from_status || "New"}{" -> "}{transition.to_status}</div>
                       <div className="text-xs uppercase tracking-[0.12em] text-slate">{transition.actor_role || "system"}</div>
@@ -127,7 +127,7 @@ export default function InvoiceDetailPage() {
                   </div>
                 ))}
                 {detail.review_tasks.slice(0, 3).map((task) => (
-                  <div key={`review-${task.id}`} className="rounded-[20px] border border-line bg-[#f8fbff] p-4">
+                  <div key={`review-${task.id}`} className="terminal-row">
                     <div className="flex items-center justify-between gap-3">
                       <div className="font-semibold text-ink">Review: {task.review_result}</div>
                       <div className="text-xs uppercase tracking-[0.12em] text-slate">{task.source_channel || "web_app"}</div>
@@ -136,7 +136,7 @@ export default function InvoiceDetailPage() {
                   </div>
                 ))}
                 {detail.events.map((event) => (
-                  <div key={event.id} className="rounded-[20px] border border-line bg-[#f8fbff] p-4">
+                  <div key={event.id} className="terminal-row">
                     <div className="flex items-center justify-between gap-3">
                       <div className="font-semibold text-ink">{event.event_type}</div>
                       <div className="text-xs uppercase tracking-[0.12em] text-slate">{event.event_status}</div>

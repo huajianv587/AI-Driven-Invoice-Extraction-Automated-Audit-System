@@ -13,6 +13,7 @@ class AuthUser(BaseModel):
     email: str
     full_name: str
     role: UserRole
+    is_public_demo: bool = False
 
 
 class AuthLoginRequest(BaseModel):
@@ -248,6 +249,8 @@ class ReviewResponse(BaseModel):
     ok: bool
     invoice_id: int
     invoice_status: str
+    changed: bool
+    message: Optional[str] = None
 
 
 class ConnectorHealth(BaseModel):
@@ -266,6 +269,104 @@ class FeishuSyncStatusResponse(BaseModel):
     retry_interval_sec: int
     retry_mode: str
     retry_batch_limit: int
+
+
+class ReadinessCheck(BaseModel):
+    ok: bool
+    detail: str
+    latest_file: Optional[str] = None
+    applied_at: Optional[str] = None
+
+
+class ReadinessReport(BaseModel):
+    ok: bool
+    app_env: str
+    checks: dict[str, ReadinessCheck]
+
+
+class IntakeFile(BaseModel):
+    name: str
+    extension: str
+    size_bytes: int
+    modified_at: Optional[str] = None
+
+
+class IntakePipelineCounts(BaseModel):
+    queued: int = 0
+    processing: int = 0
+    ingested: int = 0
+    failed: int = 0
+    total: int = 0
+
+
+class IntakeUploadItem(BaseModel):
+    id: int
+    original_name: str
+    staged_name: str
+    extension: str
+    size_bytes: int
+    status: Literal["queued", "processing", "ingested", "failed"]
+    error_message: Optional[str] = None
+    invoice_id: Optional[int] = None
+    created_by: Optional[int] = None
+    created_by_email: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class IntakeSummary(BaseModel):
+    directory: str
+    exists: bool
+    writable: bool
+    upload_enabled: bool
+    total_files: int
+    total_bytes: int
+    accepted_extensions: List[str] = Field(default_factory=list)
+    extension_breakdown: dict[str, int] = Field(default_factory=dict)
+    recent_files: List[IntakeFile] = Field(default_factory=list)
+    pipeline_counts: IntakePipelineCounts = Field(default_factory=IntakePipelineCounts)
+    recent_uploads: List[IntakeUploadItem] = Field(default_factory=list)
+
+
+class IntakeUploadsResponse(BaseModel):
+    items: List[IntakeUploadItem] = Field(default_factory=list)
+    total_count: int = 0
+    limit: int = 0
+    offset: int = 0
+
+
+class AlertQueueItem(BaseModel):
+    invoice_id: int
+    seller_name: Optional[str] = None
+    purchase_order_no: Optional[str] = None
+    risk_reason_summary: str = "-"
+    amount_diff: float = 0.0
+    notify_personal_status: Optional[str] = None
+    notify_leader_status: Optional[str] = None
+    alert_at: Optional[str] = None
+
+
+class AlertSummary(BaseModel):
+    risk_count: int
+    personal_sent_count: int
+    leader_sent_count: int
+    queued_count: int
+    recent_items: List[AlertQueueItem] = Field(default_factory=list)
+
+
+class ControlRoomSummary(BaseModel):
+    readiness: ReadinessReport
+    intake: IntakeSummary
+    alerts: AlertSummary
+    feishu_sync: FeishuSyncStatusResponse
+    mailpit_url: Optional[str] = None
+
+
+class UploadInvoiceResponse(BaseModel):
+    ok: bool
+    message: str
+    upload: IntakeUploadItem
+    intake: IntakeSummary
 
 
 class FeishuFailureItem(BaseModel):
@@ -295,3 +396,5 @@ class FeishuReplayResult(BaseModel):
     ok_count: int
     fail_count: int
     details: List[FeishuRetryDetail]
+    run_id: Optional[str] = None
+    latency_ms: Optional[float] = None

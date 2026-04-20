@@ -4,7 +4,9 @@ from glob import glob
 from typing import Any, Dict, List
 
 from src.config import load_env, load_flat_config
+from src.api.services import mark_intake_upload_failed, mark_intake_upload_processing, sync_intake_upload_result
 from src.db.mysql_client import MySQLClient
+from src.runtime_preflight import ensure_runtime_preflight
 from src.services import ingestion_service
 from src.utils.logger import get_logger
 
@@ -102,6 +104,7 @@ def main() -> None:
         logger.warning("No .env found (project root or src/). Continue with system env.")
 
     cfg = load_flat_config()
+    ensure_runtime_preflight(cfg, context="Invoice ingestion worker")
 
     logger.info(
         "MYSQL_HOST=%s MYSQL_PORT=%s MYSQL_DB=%s",
@@ -131,13 +134,21 @@ def main() -> None:
     fail = 0
 
     try:
+        db = getattr(getattr(svc, "invoice_repo", None), "db", None)
         for fp in files:
             try:
                 logger.info("Processing: %s", fp)
-                ingestion_service.process_one_image(fp, cfg, svc)
-                ok += 1
+                mark_intake_upload_processing(db, source_file_path=fp)
+                result = ingestion_service.process_one_image(fp, cfg, svc)
+                sync_intake_upload_result(db, source_file_path=fp, result=result)
+                if bool(getattr(result, "ok", False)):
+                    ok += 1
+                else:
+                    fail += 1
+                    logger.error("Worker returned error state for %s: %s", fp, getattr(result, "error", "unknown error"))
             except Exception as exc:
                 fail += 1
+                mark_intake_upload_failed(db, source_file_path=fp, error_message=str(exc))
                 logger.exception("Failed processing %s: %s", fp, exc)
     finally:
         db = getattr(getattr(svc, "invoice_repo", None), "db", None)

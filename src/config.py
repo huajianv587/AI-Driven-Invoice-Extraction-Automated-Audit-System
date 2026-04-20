@@ -68,6 +68,7 @@ class DifyCfg:
     base_url: str
     image_key: str
     workflow_id: str
+    required: bool
     retry_max: int
     retry_sleep: float
 
@@ -79,6 +80,7 @@ class FeishuCfg:
     bitable_app_token: str
     bitable_table_id: str
     sync_mode: str
+    sync_required: bool
     retry_worker_enabled: bool
     retry_interval_sec: int
     retry_mode: str
@@ -96,6 +98,7 @@ class EmailCfg:
     use_tls: bool
     use_ssl: bool
     alert_fallback_to: str
+    alert_required: bool
 
 
 @dataclass
@@ -103,17 +106,20 @@ class AuthCfg:
     api_port: int
     frontend_port: int
     frontend_origin: str
+    public_api_base_url: str
     jwt_secret: str
     jwt_old_secrets: str
     access_ttl_sec: int
     refresh_ttl_days: int
     refresh_cookie_name: str
+    cookie_domain: str
     cookie_secure: bool
     login_rate_limit_max: int
     login_rate_limit_window_sec: int
     bootstrap_admin_name: str
     bootstrap_admin_email: str
     bootstrap_admin_password: str
+    public_readonly_demo: bool
 
 
 @dataclass
@@ -149,6 +155,8 @@ class AppCfg:
             "FRONTEND_PORT": self.auth.frontend_port,
             "frontend_origin": self.auth.frontend_origin,
             "FRONTEND_ORIGIN": self.auth.frontend_origin,
+            "public_api_base_url": self.auth.public_api_base_url,
+            "NEXT_PUBLIC_API_BASE_URL": self.auth.public_api_base_url,
             "ocr_base_url": self.ocr.base_url,
             "OCR_BASE_URL": self.ocr.base_url,
             "OCR_RETRY_MAX": self.ocr.retry_max,
@@ -161,6 +169,8 @@ class AppCfg:
             "DIFY_IMAGE_KEY": self.dify.image_key,
             "dify_workflow_id": self.dify.workflow_id,
             "DIFY_WORKFLOW_ID": self.dify.workflow_id,
+            "dify_required": self.dify.required,
+            "DIFY_REQUIRED": self.dify.required,
             "DIFY_RETRY_MAX": self.dify.retry_max,
             "DIFY_RETRY_SLEEP_SEC": self.dify.retry_sleep,
             "mysql_host": self.mysql.host,
@@ -185,6 +195,8 @@ class AppCfg:
             "FEISHU_TABLE_ID": self.feishu.bitable_table_id,
             "bitable_table_id": self.feishu.bitable_table_id,
             "FEISHU_SYNC_MODE": self.feishu.sync_mode,
+            "feishu_sync_required": self.feishu.sync_required,
+            "FEISHU_SYNC_REQUIRED": self.feishu.sync_required,
             "FEISHU_RETRY_WORKER_ENABLED": self.feishu.retry_worker_enabled,
             "FEISHU_RETRY_INTERVAL_SEC": self.feishu.retry_interval_sec,
             "FEISHU_RETRY_MODE": self.feishu.retry_mode,
@@ -198,6 +210,8 @@ class AppCfg:
             "ALERT_FALLBACK_TO": self.email.alert_fallback_to,
             "SMTP_USE_TLS": self.email.use_tls,
             "SMTP_USE_SSL": self.email.use_ssl,
+            "email_alert_required": self.email.alert_required,
+            "EMAIL_ALERT_REQUIRED": self.email.alert_required,
             "auth_jwt_secret": self.auth.jwt_secret,
             "AUTH_JWT_SECRET": self.auth.jwt_secret,
             "auth_jwt_old_secrets": self.auth.jwt_old_secrets,
@@ -208,6 +222,8 @@ class AppCfg:
             "AUTH_REFRESH_TTL_DAYS": self.auth.refresh_ttl_days,
             "auth_cookie_name": self.auth.refresh_cookie_name,
             "AUTH_COOKIE_NAME": self.auth.refresh_cookie_name,
+            "auth_cookie_domain": self.auth.cookie_domain,
+            "AUTH_COOKIE_DOMAIN": self.auth.cookie_domain,
             "auth_cookie_secure": self.auth.cookie_secure,
             "AUTH_COOKIE_SECURE": self.auth.cookie_secure,
             "auth_login_rate_limit_max": self.auth.login_rate_limit_max,
@@ -220,6 +236,8 @@ class AppCfg:
             "AUTH_BOOTSTRAP_ADMIN_EMAIL": self.auth.bootstrap_admin_email,
             "auth_bootstrap_admin_password": self.auth.bootstrap_admin_password,
             "AUTH_BOOTSTRAP_ADMIN_PASSWORD": self.auth.bootstrap_admin_password,
+            "auth_public_readonly_demo": self.auth.public_readonly_demo,
+            "AUTH_PUBLIC_READONLY_DEMO": self.auth.public_readonly_demo,
             "ANOMALY_FORM_BASE_URL": self.anomaly_form_base_url,
         }
 
@@ -257,6 +275,7 @@ def load_config() -> AppCfg:
         base_url=_env_pick(["DIFY_BASE_URL"], "https://api.dify.ai/v1") or "https://api.dify.ai/v1",
         image_key=_env_pick(["DIFY_IMAGE_KEY"], "invoice") or "invoice",
         workflow_id=_env_pick(["DIFY_WORKFLOW_ID"], "") or "",
+        required=(_env_pick(["DIFY_REQUIRED"], "False") or "False").lower() in ("true", "1", "yes"),
         retry_max=int(_env_pick(["DIFY_RETRY_MAX"], "3") or "3"),
         retry_sleep=float(_env_pick(["DIFY_RETRY_SLEEP_SEC"], "2.0") or "2.0"),
     )
@@ -267,6 +286,7 @@ def load_config() -> AppCfg:
         bitable_app_token=_env_pick(["FEISHU_APP_TOKEN", "BITABLE_APP_TOKEN"], "") or "",
         bitable_table_id=_env_pick(["FEISHU_TABLE_ID", "BITABLE_TABLE_ID"], "") or "",
         sync_mode=(_env_pick(["FEISHU_SYNC_MODE"], "off") or "off").lower(),
+        sync_required=(_env_pick(["FEISHU_SYNC_REQUIRED"], "False") or "False").lower() in ("true", "1", "yes"),
         retry_worker_enabled=(_env_pick(["FEISHU_RETRY_WORKER_ENABLED"], "False") or "False").lower() in ("true", "1", "yes"),
         retry_interval_sec=int(_env_pick(["FEISHU_RETRY_INTERVAL_SEC"], "300") or "300"),
         retry_mode=(_env_pick(["FEISHU_RETRY_MODE"], "failed") or "failed").lower(),
@@ -295,6 +315,7 @@ def load_config() -> AppCfg:
             "finance-demo@local.test",
         )
         or "finance-demo@local.test",
+        alert_required=(_env_pick(["EMAIL_ALERT_REQUIRED"], "False") or "False").lower() in ("true", "1", "yes"),
     )
 
     frontend_port = int(_env_pick(["FRONTEND_PORT"], "3000") or "3000")
@@ -304,11 +325,13 @@ def load_config() -> AppCfg:
         frontend_port=frontend_port,
         frontend_origin=_env_pick(["FRONTEND_ORIGIN"], f"http://127.0.0.1:{frontend_port}")
         or f"http://127.0.0.1:{frontend_port}",
+        public_api_base_url=_env_pick(["NEXT_PUBLIC_API_BASE_URL"], "") or "",
         jwt_secret=_env_pick(["AUTH_JWT_SECRET"], "change-me-local-dev-secret") or "change-me-local-dev-secret",
         jwt_old_secrets=_env_pick(["AUTH_JWT_OLD_SECRETS"], "") or "",
         access_ttl_sec=int(_env_pick(["AUTH_ACCESS_TTL_SEC"], "900") or "900"),
         refresh_ttl_days=int(_env_pick(["AUTH_REFRESH_TTL_DAYS"], "14") or "14"),
         refresh_cookie_name=_env_pick(["AUTH_COOKIE_NAME"], "invoice_refresh_token") or "invoice_refresh_token",
+        cookie_domain=_env_pick(["AUTH_COOKIE_DOMAIN"], "") or "",
         cookie_secure=(_env_pick(["AUTH_COOKIE_SECURE"], "False") or "False").lower() in ("true", "1", "yes"),
         login_rate_limit_max=int(_env_pick(["AUTH_LOGIN_RATE_LIMIT_MAX"], "5") or "5"),
         login_rate_limit_window_sec=int(_env_pick(["AUTH_LOGIN_RATE_LIMIT_WINDOW_SEC"], "900") or "900"),
@@ -317,6 +340,14 @@ def load_config() -> AppCfg:
         or "admin@invoice-audit.local",
         bootstrap_admin_password=_env_pick(["AUTH_BOOTSTRAP_ADMIN_PASSWORD"], "ChangeMe123!")
         or "ChangeMe123!",
+        public_readonly_demo=(
+            _env_pick(
+                ["AUTH_PUBLIC_READONLY_DEMO"],
+                "False" if app_env == "production" else "True",
+            )
+            or "False"
+        ).lower()
+        in ("true", "1", "yes"),
     )
 
     return AppCfg(

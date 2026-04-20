@@ -9,6 +9,6 @@ test("dashboard renders deterministic operating posture", async ({ page }, testI
   await expect(page.getByRole("link", { name: /Working slice Review Queue/i })).toBeVisible();
   await expectStableScreenshot(page, isMobileProject(testInfo.project.name) ? "dashboard-mobile.png" : "dashboard-desktop.png", {
     mask: [page.getByTestId("activity-day-label")],
-    maskColor: "#eef3ff"
+    maskColor: "#071009"
   });
 });

@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
+import re
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
+from urllib.parse import urlparse
 
+from pymysql.err import IntegrityError
+
+from src.api.observability import log_json
 from src.api.security import create_access_token, generate_refresh_token, hash_password, hash_refresh_token, verify_password
 from src.api.state_machine import InvalidStateTransition, validate_review_transition
 from src.db.mysql_client import MySQLClient
@@ -16,13 +24,21 @@ from src.services.integration_checks import check_dify, check_feishu, check_http
 
 
 CONNECTOR_NAMES = ["OCR", "Dify", "Feishu", "SMTP"]
+INTAKE_ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".pdf", ".png", ".webp"}
+INTAKE_UPLOAD_STATUSES = ("queued", "processing", "ingested", "failed")
 _CONNECTOR_CACHE_LOCK = threading.Lock()
 _CONNECTOR_CACHE: Dict[str, Any] = {"expires_at": 0.0, "rows": [], "cached_at": None}
-_FEISHU_RETRY_LOCK = threading.Lock()
 
 
 class RetryAlreadyRunning(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ReviewUpdateResult:
+    changed: bool
+    invoice_status: str
+    message: str
 
 
 def decode_json(value: Any) -> Any:
@@ -35,7 +51,7 @@ def decode_json(value: Any) -> Any:
     if isinstance(value, str):
         try:
             return json.loads(value)
-        except Exception:
+        except (TypeError, ValueError, json.JSONDecodeError):
             return value
     return value
 
@@ -45,7 +61,7 @@ def safe_float(value: Any) -> float:
         if value in (None, ""):
             return 0.0
         return float(value)
-    except Exception:
+    except (TypeError, ValueError):
         return 0.0
 
 
@@ -54,7 +70,7 @@ def safe_int(value: Any) -> int:
         if value in (None, ""):
             return 0
         return int(value)
-    except Exception:
+    except (TypeError, ValueError):
         return 0
 
 
@@ -92,6 +108,16 @@ def utc_now() -> dt.datetime:
 
 def iso_utc(value: Optional[dt.datetime] = None) -> str:
     return (value or utc_now()).isoformat() + "Z"
+
+
+def iso_from_timestamp(value: float) -> str:
+    return dt.datetime.fromtimestamp(value, tz=dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def filename_slug(value: Any) -> str:
+    base = Path(str(value or "").strip()).stem
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-_.")
+    return (normalized or "invoice")[:48]
 
 
 def parse_old_secrets(value: Any) -> List[str]:
@@ -204,6 +230,7 @@ def public_user(user: Dict[str, Any]) -> Dict[str, Any]:
         "email": str(user.get("email") or "").strip().lower(),
         "full_name": str(user.get("full_name") or "").strip() or "Unnamed User",
         "role": str(user.get("role") or "reviewer").strip().lower(),
+        "is_public_demo": bool(user.get("is_public_demo")),
     }
 
 
@@ -241,7 +268,7 @@ def log_security_event(
             ),
         )
     except Exception as exc:
-        print(f"[warn] Failed to write security event {event_type}: {exc}")
+        log_json("security.event_write_failed", event_type=event_type, error=type(exc).__name__, request_id=request_id)
 
 
 def record_login_attempt(
@@ -270,7 +297,7 @@ def record_login_attempt(
             ),
         )
     except Exception as exc:
-        print(f"[warn] Failed to record login attempt: {exc}")
+        log_json("security.login_attempt_write_failed", email=email, error=type(exc).__name__, request_id=request_id)
 
 
 def login_is_rate_limited(db: MySQLClient, *, email: str, ip_address: str, max_attempts: int, window_sec: int) -> bool:
@@ -489,6 +516,16 @@ def issue_auth_payload(cfg: Dict[str, Any], user: Dict[str, Any]) -> Dict[str, A
     }
 
 
+def public_demo_user() -> Dict[str, Any]:
+    return {
+        "id": 0,
+        "email": "public-demo@invoice-audit.local",
+        "full_name": "Public Demo",
+        "role": "ops",
+        "is_public_demo": True,
+    }
+
+
 def fetch_metrics(db: MySQLClient) -> Dict[str, Any]:
     sql = """
     SELECT
@@ -654,6 +691,26 @@ def latest_duplicate_review_task(
     )
 
 
+def normalize_idempotency_key(value: str = "") -> str:
+    return str(value or "").strip()[:128]
+
+
+def fetch_review_task_by_idempotency(db: MySQLClient, idempotency_key: str, *, for_update: bool = False) -> Optional[Dict[str, Any]]:
+    key = normalize_idempotency_key(idempotency_key)
+    if not key:
+        return None
+    lock_sql = " FOR UPDATE" if for_update else ""
+    return db.fetch_one(
+        f"""
+        SELECT id, invoice_id, review_result
+        FROM invoice_review_tasks
+        WHERE idempotency_key=%s
+        LIMIT 1{lock_sql}
+        """,
+        (key,),
+    )
+
+
 def update_invoice_review(
     db: MySQLClient,
     *,
@@ -666,83 +723,129 @@ def update_invoice_review(
     actor_user: Dict[str, Any],
     request_id: str = "",
     idempotency_key: str = "",
-    ) -> bool:
-    invoice_row = db.fetch_one("SELECT invoice_status FROM invoices WHERE id=%s LIMIT 1", (int(invoice_id),)) or {}
-    current_status = str(invoice_row.get("invoice_status") or "")
-    actor_role = str(actor_user.get("role") or "").strip().lower()
-    duplicate = latest_duplicate_review_task(
-        db,
-        invoice_id=invoice_id,
-        review_result=invoice_status,
-        handler_user=handler_user,
-        handling_note=handler_reason,
-    )
-    if duplicate and current_status == invoice_status:
-        return False
-    validate_review_transition(current_status, invoice_status, actor_role)
+    ) -> ReviewUpdateResult:
+    review_key = normalize_idempotency_key(idempotency_key)
+    transition_key = review_key or uuid.uuid4().hex
+    try:
+        db.begin()
+        if review_key:
+            existing = fetch_review_task_by_idempotency(db, review_key, for_update=True)
+            if existing:
+                db.commit()
+                return ReviewUpdateResult(
+                    changed=False,
+                    invoice_status=str(existing.get("review_result") or invoice_status),
+                    message="Duplicate idempotency key; existing review decision preserved.",
+                )
 
-    db.execute(
-        """
-        UPDATE invoices
-        SET invoice_status=%s, handler_user=%s, handler_reason=%s, handled_at=NOW(), updated_at=NOW()
-        WHERE id=%s
-        """,
-        (invoice_status, handler_user or None, handler_reason or None, int(invoice_id)),
-    )
-    db.execute(
-        """
-        INSERT INTO invoice_review_tasks(
-          invoice_id, purchase_order_no, unique_hash, review_result, handler_user, handling_note, source_channel
+        invoice_row = db.fetch_one(
+            "SELECT invoice_status FROM invoices WHERE id=%s LIMIT 1 FOR UPDATE",
+            (int(invoice_id),),
+        ) or {}
+        if not invoice_row:
+            raise InvalidStateTransition("Invoice not found.")
+        current_status = str(invoice_row.get("invoice_status") or "")
+        actor_role = str(actor_user.get("role") or "").strip().lower()
+        duplicate = latest_duplicate_review_task(
+            db,
+            invoice_id=invoice_id,
+            review_result=invoice_status,
+            handler_user=handler_user,
+            handling_note=handler_reason,
         )
-        VALUES(%s, %s, %s, %s, %s, %s, %s)
-        """,
-        (
-            int(invoice_id),
-            purchase_order_no or None,
-            unique_hash or None,
-            invoice_status,
-            handler_user or None,
-            handler_reason or None,
-            "web_app",
-        ),
-    )
-    db.execute(
-        """
-        INSERT INTO invoice_state_transitions(
-          invoice_id, from_status, to_status, actor_user_id, actor_email, actor_role,
-          request_id, reason, idempotency_key
+        if duplicate and current_status == invoice_status:
+            db.commit()
+            return ReviewUpdateResult(
+                changed=False,
+                invoice_status=invoice_status,
+                message="Duplicate review decision; existing audit trail preserved.",
+            )
+        validate_review_transition(current_status, invoice_status, actor_role)
+
+        db.execute(
+            """
+            UPDATE invoices
+            SET invoice_status=%s, handler_user=%s, handler_reason=%s, handled_at=NOW(), updated_at=NOW()
+            WHERE id=%s
+            """,
+            (invoice_status, handler_user or None, handler_reason or None, int(invoice_id)),
         )
-        VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
-        (
-            int(invoice_id),
-            current_status or None,
-            invoice_status,
-            safe_int(actor_user.get("id")) or None,
-            str(actor_user.get("email") or "")[:255] or None,
-            actor_role or None,
-            str(request_id or "")[:64] or None,
-            handler_reason or None,
-            str(idempotency_key or "")[:128] or uuid.uuid4().hex,
-        ),
-    )
-    payload = json.dumps(
-        {
-            "purchase_order_no": purchase_order_no,
-            "unique_hash": unique_hash,
-            "handler_user": handler_user,
-            "handler_reason": handler_reason,
-            "invoice_status": invoice_status,
-            "previous_status": current_status or None,
-            "request_id": request_id or None,
-        },
-        ensure_ascii=False,
-    )
-    db.execute(
-        "INSERT INTO invoice_events(invoice_id, event_type, event_status, payload) VALUES(%s, %s, %s, %s)",
-        (int(invoice_id), "WORK_ORDER_SUBMITTED", invoice_status, payload),
-    )
-    return True
+        db.execute(
+            """
+            INSERT INTO invoice_review_tasks(
+              invoice_id, purchase_order_no, unique_hash, review_result, handler_user, handling_note,
+              source_channel, idempotency_key, request_id
+            )
+            VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                int(invoice_id),
+                purchase_order_no or None,
+                unique_hash or None,
+                invoice_status,
+                handler_user or None,
+                handler_reason or None,
+                "web_app",
+                review_key or None,
+                str(request_id or "")[:64] or None,
+            ),
+        )
+        db.execute(
+            """
+            INSERT INTO invoice_state_transitions(
+              invoice_id, from_status, to_status, actor_user_id, actor_email, actor_role,
+              request_id, reason, idempotency_key
+            )
+            VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                int(invoice_id),
+                current_status or None,
+                invoice_status,
+                safe_int(actor_user.get("id")) or None,
+                str(actor_user.get("email") or "")[:255] or None,
+                actor_role or None,
+                str(request_id or "")[:64] or None,
+                handler_reason or None,
+                transition_key,
+            ),
+        )
+        payload = json.dumps(
+            {
+                "purchase_order_no": purchase_order_no,
+                "unique_hash": unique_hash,
+                "handler_user": handler_user,
+                "handler_reason": handler_reason,
+                "invoice_status": invoice_status,
+                "previous_status": current_status or None,
+                "request_id": request_id or None,
+                "idempotency_key": review_key or None,
+            },
+            ensure_ascii=False,
+        )
+        db.execute(
+            "INSERT INTO invoice_events(invoice_id, event_type, event_status, payload) VALUES(%s, %s, %s, %s)",
+            (int(invoice_id), "WORK_ORDER_SUBMITTED", invoice_status, payload),
+        )
+        db.commit()
+        return ReviewUpdateResult(
+            changed=True,
+            invoice_status=invoice_status,
+            message="Decision saved and audit trail updated.",
+        )
+    except IntegrityError:
+        db.rollback()
+        existing = fetch_review_task_by_idempotency(db, review_key) if review_key else None
+        if existing:
+            return ReviewUpdateResult(
+                changed=False,
+                invoice_status=str(existing.get("review_result") or invoice_status),
+                message="Duplicate idempotency key; existing review decision preserved.",
+            )
+        raise
+    except Exception:
+        db.rollback()
+        raise
 
 
 def _unknown_connector_rows() -> List[Dict[str, Any]]:
@@ -989,6 +1092,459 @@ def build_ops_sync_summary(db: MySQLClient, cfg: Dict[str, Any]) -> Dict[str, An
     }
 
 
+def build_mailpit_url(cfg: Dict[str, Any]) -> Optional[str]:
+    port = str(os.getenv("MAILPIT_WEB_PORT") or "8025").strip()
+    if not port:
+        return None
+    frontend_origin = str(cfg.get("FRONTEND_ORIGIN") or "").strip()
+    parsed = urlparse(frontend_origin if "://" in frontend_origin else f"http://{frontend_origin}")
+    host = parsed.hostname or "127.0.0.1"
+    return f"http://{host}:{port}"
+
+
+def intake_upload_table_exists(db: Optional[MySQLClient]) -> bool:
+    if db is None:
+        return False
+    row = db.fetch_one(
+        """
+        SELECT COUNT(*) AS table_count
+        FROM information_schema.tables
+        WHERE table_schema = DATABASE()
+          AND table_name = %s
+        """,
+        ("app_intake_uploads",),
+    ) or {}
+    return safe_int(row.get("table_count")) > 0
+
+
+def serialize_intake_upload_row(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    data = row or {}
+    status = str(data.get("status") or "queued").strip().lower()
+    if status not in INTAKE_UPLOAD_STATUSES:
+        status = "queued"
+    return {
+        "id": safe_int(data.get("id")),
+        "original_name": str(data.get("original_name") or "").strip(),
+        "staged_name": str(data.get("staged_name") or "").strip(),
+        "extension": str(data.get("extension") or "").strip().lower() or "-",
+        "size_bytes": safe_int(data.get("size_bytes")),
+        "status": status,
+        "error_message": short_text(data.get("error_message"), limit=240) if data.get("error_message") else None,
+        "invoice_id": safe_int(data.get("invoice_id")) or None,
+        "created_by": safe_int(data.get("created_by")) or None,
+        "created_by_email": str(data.get("created_by_email") or "").strip().lower() or None,
+        "created_at": serialize_value(data.get("created_at")),
+        "updated_at": serialize_value(data.get("updated_at")),
+    }
+
+
+def build_intake_pipeline_counts(db: Optional[MySQLClient]) -> Dict[str, Any]:
+    if not intake_upload_table_exists(db):
+        return {"queued": 0, "processing": 0, "ingested": 0, "failed": 0, "total": 0}
+    row = db.fetch_one(
+        """
+        SELECT
+          SUM(CASE WHEN LOWER(COALESCE(status, '')) = 'queued' THEN 1 ELSE 0 END) AS queued_count,
+          SUM(CASE WHEN LOWER(COALESCE(status, '')) = 'processing' THEN 1 ELSE 0 END) AS processing_count,
+          SUM(CASE WHEN LOWER(COALESCE(status, '')) = 'ingested' THEN 1 ELSE 0 END) AS ingested_count,
+          SUM(CASE WHEN LOWER(COALESCE(status, '')) = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+          COUNT(*) AS total_count
+        FROM app_intake_uploads
+        """
+    ) or {}
+    return {
+        "queued": safe_int(row.get("queued_count")),
+        "processing": safe_int(row.get("processing_count")),
+        "ingested": safe_int(row.get("ingested_count")),
+        "failed": safe_int(row.get("failed_count")),
+        "total": safe_int(row.get("total_count")),
+    }
+
+
+def fetch_recent_intake_uploads(db: Optional[MySQLClient], *, limit: int = 12, offset: int = 0) -> Dict[str, Any]:
+    normalized_limit = max(1, safe_int(limit))
+    normalized_offset = max(0, safe_int(offset))
+    if not intake_upload_table_exists(db):
+        return {"items": [], "total_count": 0, "limit": normalized_limit, "offset": normalized_offset}
+    total_row = db.fetch_one("SELECT COUNT(*) AS total_count FROM app_intake_uploads") or {}
+    rows = db.fetch_all(
+        """
+        SELECT
+          id,
+          original_name,
+          staged_name,
+          extension,
+          size_bytes,
+          status,
+          error_message,
+          invoice_id,
+          created_by,
+          created_by_email,
+          created_at,
+          updated_at
+        FROM app_intake_uploads
+        ORDER BY updated_at DESC, id DESC
+        LIMIT %s OFFSET %s
+        """,
+        (normalized_limit, normalized_offset),
+    )
+    return {
+        "items": [serialize_intake_upload_row(row) for row in rows],
+        "total_count": safe_int(total_row.get("total_count")),
+        "limit": normalized_limit,
+        "offset": normalized_offset,
+    }
+
+
+def require_intake_upload_table(db: Optional[MySQLClient]) -> None:
+    if intake_upload_table_exists(db):
+        return
+    raise RuntimeError("Schema is missing app_intake_uploads. Run apply_schema before using intake upload logging.")
+
+
+def create_intake_upload_log(
+    db: Optional[MySQLClient],
+    *,
+    original_name: str,
+    staged_file: Dict[str, Any],
+    user: Dict[str, Any],
+) -> Dict[str, Any]:
+    require_intake_upload_table(db)
+    upload_id = db.execute_returning_id(
+        """
+        INSERT INTO app_intake_uploads(
+          original_name,
+          staged_name,
+          extension,
+          size_bytes,
+          status,
+          created_by,
+          created_by_email
+        )
+        VALUES(%s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            str(original_name or "").strip()[:255],
+            str(staged_file.get("name") or "").strip()[:255],
+            str(staged_file.get("extension") or "").strip().lower()[:16],
+            safe_int(staged_file.get("size_bytes")),
+            "queued",
+            safe_int(user.get("id")) or None,
+            str(user.get("email") or "").strip().lower()[:255] or None,
+        ),
+    )
+    row = db.fetch_one(
+        """
+        SELECT
+          id,
+          original_name,
+          staged_name,
+          extension,
+          size_bytes,
+          status,
+          error_message,
+          invoice_id,
+          created_by,
+          created_by_email,
+          created_at,
+          updated_at
+        FROM app_intake_uploads
+        WHERE id = %s
+        LIMIT 1
+        """,
+        (upload_id,),
+    )
+    return serialize_intake_upload_row(row)
+
+
+def update_intake_upload_status(
+    db: Optional[MySQLClient],
+    *,
+    staged_name: str,
+    status: str,
+    invoice_id: Optional[int] = None,
+    error_message: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    normalized_name = os.path.basename(str(staged_name or "").strip())
+    normalized_status = str(status or "").strip().lower()
+    if not normalized_name or normalized_status not in INTAKE_UPLOAD_STATUSES or not intake_upload_table_exists(db):
+        return None
+    current = db.fetch_one(
+        """
+        SELECT id
+        FROM app_intake_uploads
+        WHERE staged_name = %s
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (normalized_name,),
+    ) or {}
+    upload_id = safe_int(current.get("id"))
+    if upload_id <= 0:
+        return None
+    db.execute(
+        """
+        UPDATE app_intake_uploads
+        SET status = %s,
+            invoice_id = %s,
+            error_message = %s,
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (
+            normalized_status,
+            safe_int(invoice_id) or None,
+            short_text(error_message, limit=500) if error_message else None,
+            upload_id,
+        ),
+    )
+    updated = db.fetch_one(
+        """
+        SELECT
+          id,
+          original_name,
+          staged_name,
+          extension,
+          size_bytes,
+          status,
+          error_message,
+          invoice_id,
+          created_by,
+          created_by_email,
+          created_at,
+          updated_at
+        FROM app_intake_uploads
+        WHERE id = %s
+        LIMIT 1
+        """,
+        (upload_id,),
+    )
+    return serialize_intake_upload_row(updated)
+
+
+def mark_intake_upload_processing(db: Optional[MySQLClient], *, source_file_path: str) -> Optional[Dict[str, Any]]:
+    return update_intake_upload_status(db, staged_name=source_file_path, status="processing")
+
+
+def mark_intake_upload_failed(
+    db: Optional[MySQLClient],
+    *,
+    source_file_path: str,
+    error_message: str,
+) -> Optional[Dict[str, Any]]:
+    return update_intake_upload_status(
+        db,
+        staged_name=source_file_path,
+        status="failed",
+        error_message=error_message,
+    )
+
+
+def sync_intake_upload_result(
+    db: Optional[MySQLClient],
+    *,
+    source_file_path: str,
+    result: Any,
+) -> Optional[Dict[str, Any]]:
+    if not result:
+        return None
+    if bool(getattr(result, "ok", False)) and str(getattr(result, "action", "")).strip().lower() in {"inserted", "skipped"}:
+        return update_intake_upload_status(
+            db,
+            staged_name=source_file_path,
+            status="ingested",
+            invoice_id=safe_int(getattr(result, "invoice_id", None)) or None,
+        )
+    return update_intake_upload_status(
+        db,
+        staged_name=source_file_path,
+        status="failed",
+        invoice_id=safe_int(getattr(result, "invoice_id", None)) or None,
+        error_message=str(getattr(result, "error", "") or "Ingestion returned an error state."),
+    )
+
+
+def build_intake_summary(
+    cfg: Dict[str, Any],
+    *,
+    limit: int = 6,
+    db: Optional[MySQLClient] = None,
+    upload_limit: int = 12,
+) -> Dict[str, Any]:
+    intake_dir = Path(str(cfg.get("invoices_dir") or "")).expanduser()
+    exists = intake_dir.exists()
+    writable = exists and os.access(intake_dir, os.W_OK)
+    files = [path for path in intake_dir.iterdir() if path.is_file()] if exists else []
+    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+
+    extension_breakdown: Dict[str, int] = {}
+    recent_files: List[Dict[str, Any]] = []
+    total_bytes = 0
+    for path in files:
+        suffix = path.suffix.lower() or "-"
+        extension_breakdown[suffix] = extension_breakdown.get(suffix, 0) + 1
+        stat = path.stat()
+        total_bytes += safe_int(stat.st_size)
+        if len(recent_files) < max(1, int(limit)):
+            recent_files.append(
+                {
+                    "name": path.name,
+                    "extension": suffix,
+                    "size_bytes": safe_int(stat.st_size),
+                    "modified_at": iso_from_timestamp(stat.st_mtime),
+                }
+            )
+
+    upload_log_ready = intake_upload_table_exists(db) if db is not None else True
+    uploads = fetch_recent_intake_uploads(db, limit=upload_limit) if db is not None else {"items": []}
+    return {
+        "directory": str(intake_dir),
+        "exists": exists,
+        "writable": writable,
+        "upload_enabled": exists and writable and upload_log_ready,
+        "total_files": len(files),
+        "total_bytes": total_bytes,
+        "accepted_extensions": sorted(INTAKE_ALLOWED_EXTENSIONS),
+        "extension_breakdown": extension_breakdown,
+        "recent_files": recent_files,
+        "pipeline_counts": build_intake_pipeline_counts(db),
+        "recent_uploads": uploads.get("items", []),
+    }
+
+
+def build_alert_summary(db: MySQLClient, *, limit: int = 5) -> Dict[str, Any]:
+    summary = db.fetch_one(
+        """
+        SELECT
+          SUM(CASE WHEN risk_flag = 1 THEN 1 ELSE 0 END) AS risk_count,
+          SUM(CASE WHEN risk_flag = 1 AND LOWER(COALESCE(notify_personal_status, '')) = 'sent' THEN 1 ELSE 0 END) AS personal_sent_count,
+          SUM(CASE WHEN risk_flag = 1 AND LOWER(COALESCE(notify_leader_status, '')) = 'sent' THEN 1 ELSE 0 END) AS leader_sent_count,
+          SUM(
+            CASE
+              WHEN risk_flag = 1 AND (
+                LOWER(COALESCE(notify_personal_status, '')) IN ('pending', 'queued')
+                OR LOWER(COALESCE(notify_leader_status, '')) IN ('pending', 'queued')
+              )
+              THEN 1
+              ELSE 0
+            END
+          ) AS queued_count
+        FROM invoices
+        """
+    ) or {}
+    rows = db.fetch_all(
+        """
+        SELECT
+          id,
+          seller_name,
+          purchase_order_no,
+          risk_reason,
+          amount_diff,
+          notify_personal_status,
+          notify_leader_status,
+          COALESCE(handled_at, updated_at, created_at) AS alert_at
+        FROM invoices
+        WHERE risk_flag = 1
+        ORDER BY COALESCE(handled_at, updated_at, created_at) DESC, id DESC
+        LIMIT %s
+        """,
+        (int(limit),),
+    )
+    recent_items: List[Dict[str, Any]] = []
+    for row in rows:
+        recent_items.append(
+            {
+                "invoice_id": safe_int(row.get("id")),
+                "seller_name": row.get("seller_name"),
+                "purchase_order_no": row.get("purchase_order_no"),
+                "risk_reason_summary": summarize_risk_reason(row.get("risk_reason")),
+                "amount_diff": safe_float(row.get("amount_diff")),
+                "notify_personal_status": row.get("notify_personal_status"),
+                "notify_leader_status": row.get("notify_leader_status"),
+                "alert_at": serialize_value(row.get("alert_at")),
+            }
+        )
+    return {
+        "risk_count": safe_int(summary.get("risk_count")),
+        "personal_sent_count": safe_int(summary.get("personal_sent_count")),
+        "leader_sent_count": safe_int(summary.get("leader_sent_count")),
+        "queued_count": safe_int(summary.get("queued_count")),
+        "recent_items": recent_items,
+    }
+
+
+def build_control_room_summary(db: MySQLClient, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    from src.runtime_preflight import build_readiness_report
+
+    return {
+        "readiness": build_readiness_report(db, cfg),
+        "intake": build_intake_summary(cfg, db=db),
+        "alerts": build_alert_summary(db),
+        "feishu_sync": build_ops_sync_summary(db, cfg),
+        "mailpit_url": build_mailpit_url(cfg),
+    }
+
+
+def stage_intake_upload(cfg: Dict[str, Any], *, original_name: str, content: bytes) -> Dict[str, Any]:
+    if not content:
+        raise ValueError("The uploaded file is empty.")
+    extension = Path(str(original_name or "").strip()).suffix.lower()
+    if extension not in INTAKE_ALLOWED_EXTENSIONS:
+        allowed = ", ".join(sorted(INTAKE_ALLOWED_EXTENSIONS))
+        raise ValueError(f"Unsupported file type. Use one of: {allowed}.")
+
+    intake_dir = Path(str(cfg.get("invoices_dir") or "")).expanduser()
+    intake_dir.mkdir(parents=True, exist_ok=True)
+    if not intake_dir.is_dir():
+        raise OSError(f"Intake path is not a directory: {intake_dir}")
+
+    timestamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    file_name = f"{timestamp}-{uuid.uuid4().hex[:8]}-{filename_slug(original_name)}{extension}"
+    destination = intake_dir / file_name
+    destination.write_bytes(content)
+    stat = destination.stat()
+    return {
+        "name": destination.name,
+        "path": str(destination),
+        "extension": extension,
+        "size_bytes": safe_int(stat.st_size),
+        "modified_at": iso_from_timestamp(stat.st_mtime),
+    }
+
+
+def acquire_operation_lock(db: MySQLClient, *, lock_name: str, owner: str, ttl_sec: int = 900) -> bool:
+    normalized_name = str(lock_name or "").strip()[:128]
+    normalized_owner = str(owner or "").strip()[:128]
+    if not normalized_name or not normalized_owner:
+        return False
+    ttl = max(30, safe_int(ttl_sec))
+    db.execute(
+        """
+        INSERT INTO app_operation_locks(lock_name, owner, expires_at, acquired_at)
+        VALUES(%s, %s, DATE_ADD(NOW(), INTERVAL %s SECOND), NOW())
+        ON DUPLICATE KEY UPDATE
+          owner = IF(app_operation_locks.expires_at <= NOW(), VALUES(owner), app_operation_locks.owner),
+          expires_at = IF(app_operation_locks.expires_at <= NOW(), VALUES(expires_at), app_operation_locks.expires_at),
+          acquired_at = IF(app_operation_locks.expires_at <= NOW(), NOW(), app_operation_locks.acquired_at),
+          updated_at = IF(app_operation_locks.expires_at <= NOW(), NOW(), app_operation_locks.updated_at)
+        """,
+        (normalized_name, normalized_owner, ttl),
+    )
+    row = db.fetch_one("SELECT owner FROM app_operation_locks WHERE lock_name=%s LIMIT 1", (normalized_name,)) or {}
+    return str(row.get("owner") or "") == normalized_owner
+
+
+def release_operation_lock(db: MySQLClient, *, lock_name: str, owner: str) -> int:
+    normalized_name = str(lock_name or "").strip()[:128]
+    normalized_owner = str(owner or "").strip()[:128]
+    if not normalized_name or not normalized_owner:
+        return 0
+    return db.execute(
+        "DELETE FROM app_operation_locks WHERE lock_name=%s AND owner=%s",
+        (normalized_name, normalized_owner),
+    )
+
+
 def retry_feishu_sync(
     db: MySQLClient,
     cfg: Dict[str, Any],
@@ -996,8 +1552,10 @@ def retry_feishu_sync(
     mode: str,
     limit: int,
     invoice_ids: Sequence[int],
+    request_id: str = "",
 ) -> Dict[str, Any]:
-    acquired = _FEISHU_RETRY_LOCK.acquire(blocking=False)
+    run_id = uuid.uuid4().hex
+    acquired = acquire_operation_lock(db, lock_name="feishu_retry", owner=run_id, ttl_sec=900)
     if not acquired:
         raise RetryAlreadyRunning("A Feishu replay is already running. Wait for it to finish before retrying.")
     started_at = time.perf_counter()
@@ -1009,8 +1567,19 @@ def retry_feishu_sync(
             limit=int(limit),
             invoice_ids=invoice_ids,
         )
+    except Exception as exc:
+        latency_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        log_json(
+            "integration.feishu_retry.error",
+            request_id=request_id,
+            run_id=run_id,
+            mode=mode,
+            latency_ms=latency_ms,
+            error=type(exc).__name__,
+        )
+        raise
     finally:
-        _FEISHU_RETRY_LOCK.release()
+        release_operation_lock(db, lock_name="feishu_retry", owner=run_id)
     latency_ms = round((time.perf_counter() - started_at) * 1000, 2)
     for detail in details:
         invoice_id = safe_int((detail or {}).get("invoice_id"))
@@ -1023,6 +1592,8 @@ def retry_feishu_sync(
                 "record_id": (detail or {}).get("record_id"),
                 "error": serialize_value((detail or {}).get("error")),
                 "latency_ms": latency_ms,
+                "request_id": request_id or None,
+                "run_id": run_id,
             },
             ensure_ascii=False,
         )
@@ -1030,8 +1601,19 @@ def retry_feishu_sync(
             "INSERT INTO invoice_events(invoice_id, event_type, event_status, payload) VALUES(%s, %s, %s, %s)",
             (invoice_id, "FEISHU_RETRY", "OK" if (detail or {}).get("ok") else "FAILED", payload),
         )
+    log_json(
+        "integration.feishu_retry",
+        request_id=request_id,
+        run_id=run_id,
+        mode=mode,
+        ok_count=safe_int(ok_count),
+        fail_count=safe_int(fail_count),
+        latency_ms=latency_ms,
+    )
     return {
         "ok_count": safe_int(ok_count),
         "fail_count": safe_int(fail_count),
         "details": [serialize_value(item) for item in details],
+        "run_id": run_id,
+        "latency_ms": latency_ms,
     }

@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { IBM_Plex_Mono, Manrope, Sora } from "next/font/google";
+import { IBM_Plex_Mono, Manrope, Orbitron } from "next/font/google";
 
 import { Providers } from "@/components/providers";
 import "@/app/globals.css";
 
-const sora = Sora({
+const orbitron = Orbitron({
   subsets: ["latin"],
-  weight: ["500", "600", "700"],
+  weight: ["500", "600", "700", "800"],
   variable: "--font-display"
 });
 
@@ -30,7 +30,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html className={`${sora.variable} ${manrope.variable} ${plexMono.variable}`} lang="en">
+    <html className={`${orbitron.variable} ${manrope.variable} ${plexMono.variable}`} lang="en">
       <body>
         <Providers>{children}</Providers>
       </body>

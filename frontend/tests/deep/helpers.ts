@@ -36,6 +36,12 @@ export async function apiPost(api: APIRequestContext, path: string, token: strin
   });
 }
 
+export async function apiDelete(api: APIRequestContext, path: string, token: string) {
+  return api.delete(path, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+}
+
 export function expiredAccessToken(role: Role, userId = 9999) {
   const env = loadRootEnv();
   const secret = env.AUTH_JWT_SECRET || "change-me-local-dev-secret";

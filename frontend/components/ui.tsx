@@ -36,10 +36,13 @@ export function StatCard({
   tone?: "neutral" | "ok" | "warn" | "danger";
 }) {
   return (
-    <Surface className={cn("relative overflow-hidden", `tone-${tone}`)}>
-      <p className="mono-label text-slate">{label}</p>
-      <div className="mt-4 text-3xl font-semibold text-ink">{value}</div>
-      <p className="mt-3 text-sm text-slate">{note}</p>
+    <Surface className={cn("overflow-hidden interactive-card", `tone-${tone}`)}>
+      <div className="flex items-start justify-between gap-3">
+        <p className="mono-label text-slate">{label}</p>
+        <span className="h-2 w-2 rounded-full bg-brand shadow-[0_0_18px_rgba(0,255,136,0.55)]" />
+      </div>
+      <div className="mt-3 font-mono text-[2rem] font-semibold text-ink">{value}</div>
+      <p className="mt-2 text-sm leading-6 text-slate">{note}</p>
     </Surface>
   );
 }
@@ -60,7 +63,7 @@ export function SectionHeader({
       <div className="max-w-2xl">
         {kicker ? <p className="mono-label text-brand">{kicker}</p> : null}
         <h2 className="mt-2 text-2xl font-semibold tracking-tight text-ink">{title}</h2>
-        <p className="mt-2 text-sm leading-6 text-slate">{copy}</p>
+        <p className="mt-1.5 text-sm leading-6 text-slate">{copy}</p>
       </div>
       {action}
     </div>
@@ -79,12 +82,12 @@ export function LinkCard({
   copy: string;
 }) {
   return (
-    <Link className="block surface-card transition-transform hover:-translate-y-0.5" href={href}>
+    <Link className="block surface-card interactive-card" href={href}>
       <p className="mono-label text-brand">{kicker}</p>
-      <div className="mt-3 flex items-center justify-between gap-3">
+      <div className="mt-2.5 flex items-center justify-between gap-3">
         <div>
           <div className="text-lg font-semibold text-ink">{title}</div>
-          <p className="mt-2 text-sm leading-6 text-slate">{copy}</p>
+          <p className="mt-1.5 text-sm leading-6 text-slate">{copy}</p>
         </div>
         <ArrowRight className="size-4 text-brand" />
       </div>

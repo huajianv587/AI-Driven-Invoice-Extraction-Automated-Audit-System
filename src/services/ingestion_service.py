@@ -43,6 +43,15 @@ def _cfg_pick(cfg: Dict[str, Any], keys: List[str], default: Any = None) -> Any:
     return default
 
 
+def _cfg_flag(cfg: Dict[str, Any], keys: List[str], default: bool = False) -> bool:
+    value = _cfg_pick(cfg, keys, None)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes")
+
+
 def _safe_str(x: Any) -> str:
     if x is None:
         return ""
@@ -1334,7 +1343,13 @@ class IngestionService:
             "unique_hash": unique_hash,
         }
 
+        db = getattr(self.invoice_repo, "db", None)
+        tx_started = False
+
         try:
+            if db and all(hasattr(db, attr) for attr in ("begin", "commit", "rollback")):
+                db.begin()
+                tx_started = True
             invoice_id = self.invoice_repo.insert_invoice(row)
 
             # 插入 items（兼容你 main.DB 没有 executemany 的情况）
@@ -1365,14 +1380,16 @@ class IngestionService:
 
             # event（可选）
             if self.event_repo:
-                try:
-                    self.event_repo.add_event(invoice_id, "INGEST", "OK", payload={"source": source_file_path})
-                except Exception as exc:
-                    logger.warning("[WARN] Failed to write INGEST audit event invoice_id=%s err=%s", invoice_id, repr(exc))
+                self.event_repo.add_event(invoice_id, "INGEST", "OK", payload={"source": source_file_path})
+
+            if tx_started:
+                db.commit()
 
             return IngestResult(ok=True, action="inserted", invoice_id=invoice_id, unique_hash=unique_hash)
 
         except Exception as e:
+            if tx_started:
+                db.rollback()
             if _is_duplicate_unique_hash_error(e):
                 existed = self.invoice_repo.find_by_unique_hash(unique_hash)
                 if existed:
@@ -1406,6 +1423,7 @@ def run_pipeline_for_invoice_image(file_path: str, cfg: dict, svc: IngestionServ
     dify_base = _cfg_pick(cfg, ["dify_base_url", "DIFY_BASE_URL"], "https://api.dify.ai/v1")
     workflow_id = _cfg_pick(cfg, ["dify_workflow_id", "DIFY_WORKFLOW_ID"])
     image_key = _cfg_pick(cfg, ["dify_image_key", "DIFY_IMAGE_KEY"], "invoice")
+    dify_required = _cfg_flag(cfg, ["dify_required", "DIFY_REQUIRED"], False)
 
     outputs_schema_v1: Optional[Dict[str, Any]] = None
     flat_llm: Dict[str, Any] = {}
@@ -1474,6 +1492,8 @@ def run_pipeline_for_invoice_image(file_path: str, cfg: dict, svc: IngestionServ
             logger.info("[DEBUG] flat_llm keys: %s", list(flat_llm.keys()))
 
         except Exception as e:
+            if dify_required:
+                raise RuntimeError(f"Dify extraction failed while DIFY_REQUIRED is enabled: {repr(e)}") from e
             logger.warning(f"[WARN] Dify failed -> use OCR fallback. err={repr(e)}")
             outputs_schema_v1 = None
             flat_llm = {}
@@ -1485,6 +1505,8 @@ def run_pipeline_for_invoice_image(file_path: str, cfg: dict, svc: IngestionServ
                 except OSError as exc:
                     logger.warning("[WARN] Failed to remove temporary Dify upload file %s err=%s", cleanup_path, repr(exc))
     else:
+        if dify_required:
+            raise RuntimeError("DIFY_REQUIRED is enabled but DIFY_API_KEY or DIFY_WORKFLOW_ID is missing.")
         logger.warning("[WARN] Dify disabled (missing DIFY_API_KEY or DIFY_WORKFLOW_ID). Use OCR fallback.")
         outputs_schema_v1 = None
         flat_llm = {}
@@ -1530,22 +1552,32 @@ def run_pipeline_for_invoice_image(file_path: str, cfg: dict, svc: IngestionServ
     context["invoice_id"] = result.invoice_id
     context["unique_hash"] = result.unique_hash
     context["invoice_file_name"] = os.path.basename(file_path)
+    external_prefix = _safe_str(_cfg_pick(cfg, ["WEB_DEEP_EXTERNAL_PREFIX"], ""))
+    if external_prefix and not context.get("external_prefix"):
+        context["external_prefix"] = external_prefix
     context["amount_diff"] = _calc_amount_diff(
         context.get("expected_amount_with_tax"),
         flatten_outputs(outputs_schema_v1 or {}).get("total_amount_with_tax"),
     )
+    email_required = _cfg_flag(cfg, ["email_alert_required", "EMAIL_ALERT_REQUIRED"], False)
+    feishu_required = _cfg_flag(cfg, ["feishu_sync_required", "FEISHU_SYNC_REQUIRED"], False)
+    risk_flag = int(((outputs_schema_v1 or {}).get("risk") or {}).get("risk_flag") or 0)
 
     # 5) Email alert (only send on a newly inserted risky invoice)
     if result.ok and result.action == "inserted":
         try:
-            _send_risk_email_with_audit(
+            email_result = _send_risk_email_with_audit(
                 outputs_schema_v1,
                 context,
                 cfg,
                 db=getattr(svc.invoice_repo, "db", None),
                 invoice_id=result.invoice_id,
             )
+            if email_required and risk_flag == 1 and not getattr(email_result, "sent", False):
+                raise RuntimeError(getattr(email_result, "error", None) or "Required risk email alert was not sent.")
         except Exception as e:
+            if email_required and risk_flag == 1:
+                raise RuntimeError(f"Required risk email alert failed: {repr(e)}") from e
             logger.warning(f"[WARN] Email alert failed (ignored): {repr(e)}")
     elif result.ok and result.action == "skipped":
         try:
@@ -1554,18 +1586,24 @@ def run_pipeline_for_invoice_image(file_path: str, cfg: dict, svc: IngestionServ
                 resend_schema = _load_existing_invoice_schema(getattr(svc.invoice_repo, "db", None), result.invoice_id)
                 if not resend_schema:
                     resend_schema = outputs_schema_v1
-                _send_risk_email_with_audit(
+                email_result = _send_risk_email_with_audit(
                     resend_schema,
                     context,
                     cfg,
                     db=getattr(svc.invoice_repo, "db", None),
                     invoice_id=result.invoice_id,
                 )
+                if email_required and risk_flag == 1 and not getattr(email_result, "sent", False):
+                    raise RuntimeError(getattr(email_result, "error", None) or "Required risk email alert resend was not sent.")
         except Exception as e:
+            if email_required and risk_flag == 1:
+                raise RuntimeError(f"Required risk email alert resend failed: {repr(e)}") from e
             logger.warning(f"[WARN] Email resend on skipped invoice failed (ignored): {repr(e)}")
 
     # 6) Feishu sync（可选）
     sync_mode = str(cfg.get("FEISHU_SYNC_MODE") or "off").lower()  # off / job / inline
+    if feishu_required and sync_mode != "inline":
+        raise RuntimeError("FEISHU_SYNC_REQUIRED requires FEISHU_SYNC_MODE=inline for this ingestion path.")
     if sync_mode == "inline" and result.ok and result.action == "inserted":
         try:
             fields = _build_feishu_fields(outputs_schema_v1, context, result, file_path)
@@ -1575,9 +1613,13 @@ def run_pipeline_for_invoice_image(file_path: str, cfg: dict, svc: IngestionServ
                 logger.info("[Feishu] inline sync ok invoice_id=%s", result.invoice_id)
             else:
                 _record_feishu_sync(getattr(svc.invoice_repo, "db", None), result.invoice_id, error=msg)
+                if feishu_required:
+                    raise RuntimeError(str(msg))
                 logger.warning("[WARN] Feishu inline sync failed: %s", msg)
         except Exception as e:
             _record_feishu_sync(getattr(svc.invoice_repo, "db", None), result.invoice_id, error=repr(e))
+            if feishu_required:
+                raise RuntimeError(f"Required Feishu sync failed: {repr(e)}") from e
             logger.warning(f"[WARN] Feishu sync failed (ignored): {repr(e)}")
 
     return result

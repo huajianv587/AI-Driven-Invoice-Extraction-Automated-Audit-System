@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import Depends, HTTPException, Request, status
 
 from src.api.security import decode_access_token
-from src.api.services import get_user_by_id, log_security_event, parse_old_secrets, public_user
+from src.api.services import get_user_by_id, log_security_event, parse_old_secrets, public_demo_user, public_user
 from src.config import load_flat_config
 from src.db.mysql_client import MySQLClient
 
@@ -78,6 +78,27 @@ def get_current_user(
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User is not active.")
     return public_user(user)
+
+
+def _public_readonly_demo_enabled(cfg: dict) -> bool:
+    app_env = str(cfg.get("APP_ENV") or cfg.get("app_env") or "local").strip().lower()
+    enabled = cfg.get("AUTH_PUBLIC_READONLY_DEMO", cfg.get("auth_public_readonly_demo", False))
+    if isinstance(enabled, bool):
+        return enabled and app_env != "production"
+    return str(enabled or "").strip().lower() in {"true", "1", "yes"} and app_env != "production"
+
+
+def get_current_or_public_demo_user(
+    request: Request,
+    db: MySQLClient = Depends(get_db),
+    cfg: dict = Depends(get_cfg),
+) -> dict:
+    authorization = request.headers.get("Authorization", "")
+    if authorization.startswith("Bearer "):
+        return get_current_user(request=request, db=db, cfg=cfg)
+    if _public_readonly_demo_enabled(cfg):
+        return public_demo_user()
+    return get_current_user(request=request, db=db, cfg=cfg)
 
 
 def require_roles(*allowed_roles: str):
